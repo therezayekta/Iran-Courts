@@ -10,10 +10,9 @@ const map = L.map("map", {
   zoomSnap: 0.5,
   tap: true,
   tapTolerance: 15,
-  preferCanvas: true, // faster rendering on mobile & desktop
+  preferCanvas: true,
 });
 
-// Detailed OpenStreetMap — includes all streets, alleys, squares, and labels
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution:
