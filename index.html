@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>نقشه دادگاه‌های ایران</title>
+    <!-- Leaflet CSS -->
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <!-- Vazirmatn Font -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <!-- Custom Style -->
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!-- ── Header bar ──────────────────────────────────────────────────── -->
+    <header id="header">
+      <!-- Logo always visible -->
+      <div id="header-logo">⚖️</div>
+      <!-- Title: full on desktop, short on mobile -->
+      <div id="header-brand">
+        <div id="header-title">نقشه دادگاه‌های ایران</div>
+        <div id="header-subtitle">سامانه اطلاعات قضایی و صلح</div>
+      </div>
+      <!-- Search — centered via flex push on both sides -->
+      <div id="header-center">
+        <div id="search-container">
+          <input
+            type="text"
+            id="search-input"
+            placeholder="🔍 جستجوی شهر یا استان..."
+            onfocus="showResultsIfNotEmpty()"
+            onblur="hideResultsWithDelay()"
+          />
+          <div id="search-results" class="hidden"></div>
+        </div>
+      </div>
+      <!-- Badge: desktop only -->
+      <div id="header-badge">۳۱ استان کشور</div>
+    </header>
+
+    <!-- ── Back button ─────────────────────────────────────────────────── -->
+    <button id="back-btn" onclick="goBack()">بازگشت به نقشه ایران</button>
+
+    <!-- ── Zoom hint ───────────────────────────────────────────────────── -->
+    <div id="zoom-hint">
+      روی هر استان کلیک کنید تا شهرستان‌ها و جزئیات نمایش داده شوند
+    </div>
+
+    <!-- ── Info popup ──────────────────────────────────────────────────── -->
+    <div id="info-popup">
+      <div id="popup-header">
+        <span id="popup-title">—</span>
+        <button id="popup-close" onclick="hidePopup()" aria-label="بستن">
+          ✕
+        </button>
+      </div>
+      <div id="popup-body"></div>
+    </div>
+
+    <!-- ── Map ─────────────────────────────────────────────────────────── -->
+    <div id="map"></div>
+
+    <!-- ── Data files (loaded before app) ─────────────────────────────── -->
+    <script src="data/province-names.js"></script>
+    <script src="data/province-cities.js"></script>
+    <script src="data/courts.js"></script>
+    <script src="data/cities.js"></script>
+
+    <!-- ── Leaflet + App ──────────────────────────────────────────────── -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
