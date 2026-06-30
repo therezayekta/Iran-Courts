@@ -37,7 +37,7 @@ body {
     system-ui,
     -apple-system,
     sans-serif;
-  height: 100dvh; /* dvh = dynamic viewport height on mobile */
+  height: 100dvh; /* dvh = dynamic viewport height — accounts for mobile address bar */
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
@@ -46,7 +46,7 @@ body {
 
 #map {
   width: 100vw;
-  height: 100dvh;
+  height: 100dvh; /* dvh avoids the 100vh-on-Android blank-map bug */
   will-change: transform; /* GPU layer hint */
 }
 

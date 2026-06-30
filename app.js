@@ -2,6 +2,19 @@
 // MAP INIT
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Some mobile browsers fail to resolve vh/dvh units to a non-zero value
+// on this element chain — force an explicit pixel height as a hard fallback.
+function setExplicitHeight() {
+  const h = window.innerHeight + "px";
+  document.documentElement.style.height = h;
+  document.body.style.height = h;
+  const mapEl = document.getElementById("map");
+  if (mapEl) mapEl.style.height = h;
+}
+setExplicitHeight();
+window.addEventListener("resize", setExplicitHeight);
+window.addEventListener("orientationchange", setExplicitHeight);
+
 const map = L.map("map", {
   minZoom: 5,
   maxZoom: 17,
@@ -10,41 +23,44 @@ const map = L.map("map", {
   zoomSnap: 0.5,
   tap: true,
   tapTolerance: 15,
-  preferCanvas: true,
-  // maplibre-gl-leaflet syncs Leaflet's pan/zoom state onto a MapLibre GL
-  // map behind the scenes, and MapLibre enforces stricter max-latitude
-  // limits than Leaflet does natively. Without these bounds, panning far
-  // enough can desync the two and cause tiles to disappear or smear.
-  maxBounds: [
-    [180, -Infinity],
-    [-180, Infinity],
-  ],
-  maxBoundsViscosity: 1,
 });
 
-// Base map tiles via OpenFreeMap (vector tiles, rendered through MapLibre).
-//
-// We switched away from tile.openstreetmap.org because it's a
-// volunteer-funded service NOT meant for production traffic — it has no
-// SLA and actively blocks/rejects "heavy or inappropriate use" without
-// notice, including traffic patterns common on mobile carrier networks
-// where many phones share one IP (carrier-grade NAT). That's the likely
-// cause if the map loaded fine on desktop/home wifi but came back blank
-// (just borders, no street tiles) on a phone. OpenFreeMap has no usage
-// limit and needs no API key, so this swap removes that failure mode
-// entirely instead of just working around it.
-L.maplibreGL({
-  style: "https://tiles.openfreemap.org/styles/positron",
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
   attribution:
     '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  updateWhenIdle: true,
+  keepBuffer: 3,
 }).addTo(map);
 
-// Iran bounds — tighter mobile fit so the country is always fully visible
+// Iran bounds
 const iranBounds = L.latLngBounds([24.5, 44.0], [40.0, 64.0]);
-map.setMaxBounds(iranBounds.pad(0.2));
-// Use tighter padding on mobile so Iran fills the viewport
-const isMobile = window.innerWidth <= 600;
-map.fitBounds(iranBounds, { padding: isMobile ? [10, 10] : [48, 48] });
+
+// fitBounds() and setMaxBounds() both read the container's current pixel
+// size synchronously. On mobile the container can still be 0×0 (or mid
+// reflow) at this exact point in script execution, even right after
+// setExplicitHeight() set inline styles — the browser may not have
+// reflowed yet. If fitBounds computes against a bad/zero size, Leaflet
+// can end up with an invalid pixel origin and never issue its first tile
+// request, leaving a totally blank map that only recovers on a real
+// resize. Deferring to the next animation frame guarantees layout has
+// actually happened before we ask Leaflet to measure and fit.
+function applyInitialView() {
+  map.invalidateSize(); // re-measure container now that layout has settled
+  map.setMaxBounds(iranBounds.pad(0.2));
+  const isMobile = window.innerWidth <= 600;
+  map.fitBounds(iranBounds, { padding: isMobile ? [10, 10] : [48, 48] });
+}
+requestAnimationFrame(() => requestAnimationFrame(applyInitialView));
+
+// Belt-and-suspenders: re-measure again once everything (fonts, images,
+// all scripts) has fully loaded, in case mobile browser chrome
+// (address bar show/hide) shifted the viewport after our first pass.
+window.addEventListener("load", () => {
+  setTimeout(() => {
+    map.invalidateSize();
+  }, 100);
+});
 
 // Zoom thresholds
 const SHAHRESTAN_ZOOM = 7.0; // show shahrestan borders + labels
@@ -1144,14 +1160,24 @@ map.on("click", () => {
 
 // Province layer (IRN level 1)
 fetch("data/gadm41_IRN_1.json")
-  .then((r) => r.json())
+  .then((r) => {
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })
   .then((data) => {
     L.geoJSON(data, { onEachFeature: onEachProvince }).addTo(map);
     addWorldOverlay(data);
     buildProvinceLabels(data);
     updateProvinceLabelsVisibility();
   })
-  .catch(() => console.error("خطا در بارگذاری فایل GeoJSON استان‌ها"));
+  .catch((err) => {
+    console.error("خطا در بارگذاری فایل GeoJSON استان‌ها", err);
+    const hint = document.getElementById("zoom-hint");
+    if (hint) {
+      hint.textContent = "خطا در بارگذاری نقشه: " + err.message;
+      hint.classList.remove("hidden");
+    }
+  });
 
 // Shahrestan layer (IRN level 2)
 fetch("data/gadm41_IRN_2.json")

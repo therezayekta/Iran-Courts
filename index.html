@@ -14,11 +14,6 @@
       href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <!-- MapLibre GL CSS (for OpenFreeMap vector tile base layer) -->
-    <link
-      rel="stylesheet"
-      href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
-    />
     <!-- Custom Style -->
     <link rel="stylesheet" href="style.css" />
   </head>
@@ -79,12 +74,6 @@
 
     <!-- ── Leaflet + App ──────────────────────────────────────────────── -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <!-- MapLibre GL JS + Leaflet binding (OpenFreeMap base tiles —
-         tile.openstreetmap.org rejects/blocks heavy or carrier-NAT'd
-         mobile traffic per its usage policy; OpenFreeMap has no such
-         limit and needs no API key) -->
-    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-    <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.3/leaflet-maplibre-gl.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
