@@ -61,6 +61,61 @@ function getCourtData(key) {
   return [];
 }
 
+// Fast bbox-center for a GeoJSON Polygon/MultiPolygon, computed directly
+// from raw coordinate arrays. Avoids constructing a full Leaflet layer
+// (L.geoJSON(...).getBounds()) purely to find a label anchor point — that
+// pattern was a major source of page-load slowness when run for hundreds
+// of shahrestan/province features up front.
+function fastFeatureCenter(feature) {
+  const geom = feature.geometry;
+  if (!geom) return [0, 0];
+
+  let minLng = Infinity,
+    maxLng = -Infinity,
+    minLat = Infinity,
+    maxLat = -Infinity;
+
+  const scanRing = (ring) => {
+    for (let i = 0; i < ring.length; i++) {
+      const lng = ring[i][0],
+        lat = ring[i][1];
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+    }
+  };
+
+  if (geom.type === "Polygon") {
+    scanRing(geom.coordinates[0]);
+  } else if (geom.type === "MultiPolygon") {
+    // Use only the largest ring (by bbox span) so multi-part features
+    // (e.g. a province with small offshore islands) center on the main
+    // landmass rather than the average of all parts.
+    let best = null,
+      bestSpan = -1;
+    geom.coordinates.forEach((poly) => {
+      const ring = poly[0];
+      let lo = Infinity,
+        hi = -Infinity;
+      for (let i = 0; i < ring.length; i++) {
+        if (ring[i][0] < lo) lo = ring[i][0];
+        if (ring[i][0] > hi) hi = ring[i][0];
+      }
+      const span = hi - lo;
+      if (span > bestSpan) {
+        bestSpan = span;
+        best = ring;
+      }
+    });
+    if (best) scanRing(best);
+  } else {
+    return [0, 0];
+  }
+
+  return [(minLat + maxLat) / 2, (minLng + maxLng) / 2];
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CITY DISTRICT REGISTRY
 // Each entry defines one city's district layer.
@@ -387,6 +442,75 @@ function showToastNotification(message) {
 // ── NEW API AUTOCOMPLETE & SEARCH LOGIC ───────────────────────────────────
 let searchTimeout = null;
 
+// Build a clean "city, province" subtitle from Nominatim's structured
+// address breakdown instead of naively splitting display_name by comma —
+// comma-splitting is unreliable for Persian addresses since the segment
+// order and count varies a lot by place type.
+function buildAddressSubtitle(item) {
+  const addr = item.address || {};
+  const city =
+    addr.city ||
+    addr.town ||
+    addr.village ||
+    addr.county ||
+    addr.state_district;
+  const province = addr.state || addr.province;
+
+  if (city && province && city !== province) return `${city}، ${province}`;
+  if (province) return province;
+  if (city) return city;
+
+  // Fallback: old comma-split behavior if address breakdown is missing
+  const parts = (item.display_name || "").split(",");
+  return parts.slice(1, 3).join(",") || "ایران";
+}
+
+// One raw call to Nominatim. dedupe=0 so common street names spread
+// across multiple cities aren't collapsed into a single dominant result;
+// addressdetails=1 so we get a structured city/province breakdown.
+function fetchNominatim(query) {
+  const url =
+    `https://nominatim.openstreetmap.org/search?format=json` +
+    `&q=${encodeURIComponent(query)}` +
+    `&countrycodes=ir&limit=15&accept-language=fa` +
+    `&addressdetails=1&dedupe=0`;
+
+  return fetch(url, { headers: { "User-Agent": "IranCourtsMap/1.0" } }).then(
+    (res) => res.json(),
+  );
+}
+
+// Iranian addresses are often built from very specific local fragments —
+// "کوچه شهید X" (a named alley) is frequently not mapped in OSM at all,
+// even when the street and city it branches off are. Nominatim does NOT
+// fall back to partial matches on its own: if the full string doesn't
+// resolve as a whole, it just returns an empty array. So we do the
+// fallback ourselves — progressively drop the last word and retry, until
+// something matches or we run out of words. Whatever level succeeds is
+// returned, tagged so the UI can tell the user it's an approximate match.
+function searchWithFallback(query) {
+  const words = query.trim().split(/\s+/);
+
+  function attempt(wordCount) {
+    if (wordCount < 1)
+      return Promise.resolve({ results: [], isPartial: false });
+    const trimmedQuery = words.slice(0, wordCount).join(" ");
+    return fetchNominatim(trimmedQuery).then((data) => {
+      if (data && data.length > 0) {
+        return {
+          results: data,
+          isPartial: wordCount < words.length,
+          matchedQuery: trimmedQuery,
+        };
+      }
+      // Drop the last word and try again with a shorter query
+      return attempt(wordCount - 1);
+    });
+  }
+
+  return attempt(words.length);
+}
+
 function handleSearch(query) {
   const resultsContainer = document.getElementById("search-results");
   if (!query || query.trim() === "") {
@@ -397,19 +521,49 @@ function handleSearch(query) {
   if (searchTimeout) clearTimeout(searchTimeout);
 
   searchTimeout = setTimeout(() => {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=ir&limit=6&accept-language=fa`;
+    resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">در حال جستجو...</div>`;
+    resultsContainer.classList.remove("hidden");
 
-    fetch(url, { headers: { "User-Agent": "IranCourtsMap/1.0" } })
-      .then((res) => res.json())
-      .then((data) => {
+    searchWithFallback(query)
+      .then(({ results: data, isPartial, matchedQuery }) => {
         if (!data || data.length === 0) {
           resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">موردی یافت نشد</div>`;
-        } else {
-          resultsContainer.innerHTML = data
+          resultsContainer.classList.remove("hidden");
+          return;
+        }
+
+        // Spread results across distinct provinces/cities rather than
+        // showing 6 near-identical entries from the same place. We keep
+        // at most 2 results per province, in original relevance order,
+        // until we've filled the display cap — this way a name shared
+        // across many provinces actually shows that spread to the user.
+        const DISPLAY_CAP = 8;
+        const PER_PROVINCE_CAP = 2;
+        const seenPerProvince = {};
+        const picked = [];
+
+        for (const item of data) {
+          const province =
+            (item.address && (item.address.state || item.address.province)) ||
+            "?";
+          const count = seenPerProvince[province] || 0;
+          if (count >= PER_PROVINCE_CAP) continue;
+          seenPerProvince[province] = count + 1;
+          picked.push(item);
+          if (picked.length >= DISPLAY_CAP) break;
+        }
+
+        const partialNotice = isPartial
+          ? `<div class="search-item" style="cursor:default; justify-content:center; color:#b45309; font-size:11px;">آدرس دقیق یافت نشد — نزدیک‌ترین نتیجه برای «${matchedQuery}»</div>`
+          : "";
+
+        resultsContainer.innerHTML =
+          partialNotice +
+          picked
             .map((item) => {
               const parts = item.display_name.split(",");
               const title = parts[0];
-              const subtitle = parts.slice(1, 3).join(",") || "ایران";
+              const subtitle = buildAddressSubtitle(item);
               return `
                 <div class="search-item" onclick="selectAddressResult(${item.lat}, ${item.lon}, '${item.display_name.replace(/'/g, "\\'")}')">
                   <div style="display:flex; flex-direction:column; gap:2px; min-width:0; text-align:right;">
@@ -420,10 +574,12 @@ function handleSearch(query) {
                 </div>`;
             })
             .join("");
-        }
         resultsContainer.classList.remove("hidden");
       })
-      .catch(() => {});
+      .catch(() => {
+        resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">خطا در جستجو، دوباره تلاش کنید</div>`;
+        resultsContainer.classList.remove("hidden");
+      });
   }, 400);
 }
 
@@ -455,10 +611,38 @@ function selectAddressResult(lat, lon, displayName) {
   // Instant street-level focus zoom
   map.flyTo(latlng, 16, { duration: 1.2 });
 
-  // Extract boundary intersection data once the movement concludes
-  setTimeout(() => {
-    findLayerAndShowInfo(latlng);
-  }, 1200);
+  // Wait for the flyTo animation to actually finish (not a guessed delay),
+  // then make sure any lazily-loaded district layer for this area is ready
+  // before scanning for boundary intersection.
+  map.once("moveend", () => {
+    resolveCityDistrictLoadsNear(latlng).then(() => {
+      findLayerAndShowInfo(latlng);
+    });
+  });
+}
+
+/**
+ * Ensure any city-district layer whose viewBounds contains latlng is loaded
+ * before we try to do point-in-polygon lookups against it. Returns a promise
+ * that resolves once all relevant lazy loads (if any) have settled.
+ */
+function resolveCityDistrictLoadsNear(latlng) {
+  const pending = [];
+  CITY_DISTRICT_REGISTRY.forEach((cfg) => {
+    if (!cfg.viewBounds.contains(latlng)) return;
+    if (cityDistrictState[cfg.id]?.loaded) return; // already loaded
+    pending.push(
+      fetch(cfg.filePath)
+        .then((r) => r.json())
+        .then((data) => buildCityDistrictLayer(cfg, data))
+        .catch(() =>
+          console.warn(
+            `فایل مناطق ${cfg.persianName} پیدا نشد: ${cfg.filePath}`,
+          ),
+        ),
+    );
+  });
+  return pending.length ? Promise.all(pending) : Promise.resolve();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -613,9 +797,7 @@ function buildProvinceLabels(geojsonData) {
   geojsonData.features.forEach((feature) => {
     const name1 = feature.properties.NAME_1 || "";
     const label = persianProvinceNames[name1] || name1;
-    const center =
-      PROVINCE_LABEL_CENTERS[name1] ||
-      L.geoJSON(feature).getBounds().getCenter();
+    const center = PROVINCE_LABEL_CENTERS[name1] || fastFeatureCenter(feature);
 
     L.marker(center, {
       icon: L.divIcon({
@@ -687,7 +869,7 @@ function buildShahrestanLabels(geojsonData) {
     const label = persianShahrestanNames[name2];
     if (!label) return;
 
-    const center = L.geoJSON(feature).getBounds().getCenter();
+    const center = fastFeatureCenter(feature);
     L.marker(center, {
       icon: L.divIcon({
         className: "shahrestan-label",
