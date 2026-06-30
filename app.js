@@ -11,14 +11,32 @@ const map = L.map("map", {
   tap: true,
   tapTolerance: 15,
   preferCanvas: true,
+  // maplibre-gl-leaflet syncs Leaflet's pan/zoom state onto a MapLibre GL
+  // map behind the scenes, and MapLibre enforces stricter max-latitude
+  // limits than Leaflet does natively. Without these bounds, panning far
+  // enough can desync the two and cause tiles to disappear or smear.
+  maxBounds: [
+    [180, -Infinity],
+    [-180, Infinity],
+  ],
+  maxBoundsViscosity: 1,
 });
 
-L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
+// Base map tiles via OpenFreeMap (vector tiles, rendered through MapLibre).
+//
+// We switched away from tile.openstreetmap.org because it's a
+// volunteer-funded service NOT meant for production traffic — it has no
+// SLA and actively blocks/rejects "heavy or inappropriate use" without
+// notice, including traffic patterns common on mobile carrier networks
+// where many phones share one IP (carrier-grade NAT). That's the likely
+// cause if the map loaded fine on desktop/home wifi but came back blank
+// (just borders, no street tiles) on a phone. OpenFreeMap has no usage
+// limit and needs no API key, so this swap removes that failure mode
+// entirely instead of just working around it.
+L.maplibreGL({
+  style: "https://tiles.openfreemap.org/styles/positron",
   attribution:
     '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-  updateWhenIdle: true,
-  keepBuffer: 3,
 }).addTo(map);
 
 // Iran bounds — tighter mobile fit so the country is always fully visible
