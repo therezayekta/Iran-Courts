@@ -65,19 +65,6 @@ function toPersianNum(n) {
 
 const courtCache = {};
 
-// Province court file: data/courts/{slug}.json
-// {
-//   province: "Tehran",          // GADM NAME_1
-//   provinceFa: "تهران",
-//   courts: [{ name, code, type }],   // province-wide
-//   areas: {
-//     "Tehran": {                // GADM NAME_2 or custom key
-//       nameFa: "تهران",
-//       courts: [],
-//       districts: { "منطقه ۱": [...] }
-//     }
-//   }
-// }
 async function loadProvinceCourtFile(provinceNameGADM) {
   if (!provinceNameGADM) return null;
   const fileName = provinceNameGADM.toLowerCase().replace(/\s+/g, "-");
@@ -412,8 +399,6 @@ function anyCityDistrictSelected() {
   );
 }
 
-// Keeps the back button visible any time the user has zoomed/panned away from
-// the initial full-Iran view, in addition to whenever something is selected.
 function updateBackButtonVisibility() {
   const hasSelection =
     !!selectedProvinceLayer ||
@@ -458,31 +443,21 @@ function goBack() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SEARCH LOGIC
+// SEARCH LOGIC (Updated to use MAP.IR API)
 // ═══════════════════════════════════════════════════════════════════════════
 
+// GET YOUR FREE KEY FROM app.map.ir
+const MAPIR_API_KEY =
+  "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjZmMDA2YjcwMTJkMWJlMGQ2MTdiMjIzOTJiMWM4ZDljOGRiZTJhMzNjNGI4ZjkzYjQwZGM4NDE5ZTM2YTkzMDMzNjc2NWVkNGFkZGNhOGZkIn0.eyJhdWQiOiI0MjU1MCIsImp0aSI6IjZmMDA2YjcwMTJkMWJlMGQ2MTdiMjIzOTJiMWM4ZDljOGRiZTJhMzNjNGI4ZjkzYjQwZGM4NDE5ZTM2YTkzMDMzNjc2NWVkNGFkZGNhOGZkIiwiaWF0IjoxNzgzMDE2NTA0LCJuYmYiOjE3ODMwMTY1MDQsImV4cCI6MTc4NTYwODUwNCwic3ViIjoiIiwic2NvcGVzIjpbImJhc2ljIl19.fOvoF7GftRtoc10H2DVM9hMwRxERt3jwyZyxI97_PNPw8g4VDu3g6JauqFrf4pziAxs4CabokJzRT-T9R_AD4V2eY5bOF-S9txRwU2RanS1TIrUh6SbjixULIjcWs48ocsfqnSxP9iEbDfU3amCn_qnzzxu0PE5s7ruEZ2n875ui6gmTdj8KSkRqTO13kYgMBa5ukDoJZxgl9c33fKAi-yMX8vnBbD9iZ5PrY3OOBG3QaiEduV0yrPw7ohSEXK_m6lJ79B5FPwtwy6xZrVaW2GtkpYAA12nnZLrU6i9N-BjnkWoMBxgJnP8eVn_XrQQvsdK8ui_176oDXrm6uQ_eng";
 let searchTimeout = null;
 
-function buildAddressSubtitle(item) {
-  const addr = item.address || {};
-  const city =
-    addr.city ||
-    addr.town ||
-    addr.village ||
-    addr.county ||
-    addr.state_district;
-  const province = addr.state || addr.province;
-  if (city && province && city !== province) return `${city}، ${province}`;
-  if (province) return province;
-  if (city) return city;
-  return (item.display_name || "").split(",").slice(1, 3).join(",") || "ایران";
-}
-
-function fetchNominatim(query) {
-  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=ir&limit=15&accept-language=fa&addressdetails=1&dedupe=0`;
-  return fetch(url, { headers: { "User-Agent": "IranCourtsMap/1.0" } }).then(
-    (res) => res.json(),
-  );
+function fetchMapIr(query) {
+  const url = `https://map.ir/search/v2/autocomplete?text=${encodeURIComponent(query)}`;
+  return fetch(url, {
+    headers: { "x-api-key": MAPIR_API_KEY },
+  })
+    .then((res) => res.json())
+    .then((data) => data.value || []);
 }
 
 function searchWithFallback(query) {
@@ -491,10 +466,10 @@ function searchWithFallback(query) {
     if (wordCount < 1)
       return Promise.resolve({ results: [], isPartial: false });
     const trimmedQuery = words.slice(0, wordCount).join(" ");
-    return fetchNominatim(trimmedQuery).then((data) => {
-      if (data && data.length > 0)
+    return fetchMapIr(trimmedQuery).then((items) => {
+      if (items && items.length > 0)
         return {
-          results: data,
+          results: items,
           isPartial: wordCount < words.length,
           matchedQuery: trimmedQuery,
         };
@@ -522,33 +497,40 @@ function handleSearch(query) {
           resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">موردی یافت نشد</div>`;
           return;
         }
+
         const seenPerProvince = {};
         const picked = [];
         for (const item of data) {
-          const province =
-            (item.address && (item.address.state || item.address.province)) ||
-            "?";
+          const province = item.province || "?";
           const count = seenPerProvince[province] || 0;
           if (count >= 2) continue;
           seenPerProvince[province] = count + 1;
           picked.push(item);
           if (picked.length >= 8) break;
         }
+
         const partialNotice = isPartial
           ? `<div class="search-item" style="cursor:default; justify-content:center; color:#b45309; font-size:11px;">آدرس دقیق یافت نشد — نزدیک‌ترین نتیجه برای «${matchedQuery}»</div>`
           : "";
+
         resultsContainer.innerHTML =
           partialNotice +
           picked
-            .map(
-              (item) => `
-        <div class="search-item" onclick="selectAddressResult(${item.lat}, ${item.lon}, '${item.display_name.replace(/'/g, "\\'")}')">
+            .map((item) => {
+              // Map.ir returns GeoJSON Point coordinates as [longitude, latitude]
+              const lat = item.geom.coordinates[1];
+              const lng = item.geom.coordinates[0];
+              const title = item.title || "";
+              const subtitle = item.address || item.province || "ایران";
+
+              return `
+        <div class="search-item" onclick="selectAddressResult(${lat}, ${lng}, '${title.replace(/'/g, "\\'")}')">
           <div style="display:flex; flex-direction:column; gap:2px; min-width:0; text-align:right;">
-            <span class="search-item-title" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.display_name.split(",")[0]}</span>
-            <span style="font-size:10px; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${buildAddressSubtitle(item)}</span>
+            <span class="search-item-title" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${title}</span>
+            <span style="font-size:10px; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${subtitle}</span>
           </div><span class="search-item-badge">مکان</span>
-        </div>`,
-            )
+        </div>`;
+            })
             .join("");
       })
       .catch(() => {
@@ -558,35 +540,18 @@ function handleSearch(query) {
 }
 
 function selectAddressResult(lat, lon, displayName) {
-  document.getElementById("search-input").value = displayName.split(",")[0];
+  document.getElementById("search-input").value = displayName;
   document.getElementById("search-results").classList.add("hidden");
   const latlng = L.latLng(lat, lon);
   if (searchActiveMarker) map.removeLayer(searchActiveMarker);
   searchActiveMarker = L.marker(latlng).addTo(map);
-  searchActiveMarker
-    .bindPopup(`<b>${displayName.split(",")[0]}</b>`)
-    .openPopup();
+  searchActiveMarker.bindPopup(`<b>${displayName}</b>`).openPopup();
   map.flyTo(latlng, 16, { duration: 1.2 });
   map.once("moveend", () =>
     resolveCityDistrictLoadsNear(latlng).then(() =>
       findLayerAndShowInfo(latlng),
     ),
   );
-}
-
-function resolveCityDistrictLoadsNear(latlng) {
-  const pending = [];
-  CITY_DISTRICT_REGISTRY.forEach((cfg) => {
-    if (!cfg.viewBounds.contains(latlng)) return;
-    if (cityDistrictState[cfg.id]?.loaded) return;
-    pending.push(
-      fetch(cfg.filePath)
-        .then((r) => r.json())
-        .then((data) => buildCityDistrictLayer(cfg, data))
-        .catch(() => console.warn(`Error loading: ${cfg.filePath}`)),
-    );
-  });
-  return pending.length ? Promise.all(pending) : Promise.resolve();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
