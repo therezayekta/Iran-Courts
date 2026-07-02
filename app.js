@@ -2,8 +2,6 @@
 // MAP INIT
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Some mobile browsers fail to resolve vh/dvh units to a non-zero value
-// on this element chain — force an explicit pixel height as a hard fallback.
 function setExplicitHeight() {
   const h = window.innerHeight + "px";
   document.documentElement.style.height = h;
@@ -28,46 +26,34 @@ const map = L.map("map", {
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution:
-    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   updateWhenIdle: true,
   keepBuffer: 3,
 }).addTo(map);
 
-// Iran bounds
 const iranBounds = L.latLngBounds([24.5, 44.0], [40.0, 64.0]);
 
-// fitBounds() and setMaxBounds() both read the container's current pixel
-// size synchronously. On mobile the container can still be 0×0 (or mid
-// reflow) at this exact point in script execution, even right after
-// setExplicitHeight() set inline styles — the browser may not have
-// reflowed yet. If fitBounds computes against a bad/zero size, Leaflet
-// can end up with an invalid pixel origin and never issue its first tile
-// request, leaving a totally blank map that only recovers on a real
-// resize. Deferring to the next animation frame guarantees layout has
-// actually happened before we ask Leaflet to measure and fit.
+let initialZoom = null;
+
 function applyInitialView() {
-  map.invalidateSize(); // re-measure container now that layout has settled
+  map.invalidateSize();
   map.setMaxBounds(iranBounds.pad(0.2));
   const isMobile = window.innerWidth <= 600;
   map.fitBounds(iranBounds, { padding: isMobile ? [10, 10] : [48, 48] });
+  initialZoom = map.getZoom();
+  updateBackButtonVisibility();
 }
 requestAnimationFrame(() => requestAnimationFrame(applyInitialView));
 
-// Belt-and-suspenders: re-measure again once everything (fonts, images,
-// all scripts) has fully loaded, in case mobile browser chrome
-// (address bar show/hide) shifted the viewport after our first pass.
-window.addEventListener("load", () => {
-  setTimeout(() => {
-    map.invalidateSize();
-  }, 100);
-});
+window.addEventListener("load", () =>
+  setTimeout(() => map.invalidateSize(), 100),
+);
 
-// Zoom thresholds
-const SHAHRESTAN_ZOOM = 7.0; // show shahrestan borders + labels
-const CITY_ZOOM = 10.0; // show city district layers
+const SHAHRESTAN_ZOOM = 7.0;
+const CITY_ZOOM = 10.0;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// HELPERS
+// HELPERS & NEW DATA FETCHING LOGIC
 // ═══════════════════════════════════════════════════════════════════════════
 
 function toPersianNum(n) {
@@ -77,38 +63,65 @@ function toPersianNum(n) {
     .join("");
 }
 
-// Robust lookup for courtData that handles spelling variations
-function getCourtData(key) {
-  if (!key) return [];
-  if (typeof courtData === "undefined") return [];
-  if (courtData[key]) return courtData[key];
+const courtCache = {};
 
-  const targetPersian =
-    persianProvinceNames[key] || persianShahrestanNames[key] || key;
-  const cleanTarget = targetPersian.replace(/\s+/g, "").replace("و", "");
+// Loads and caches a province's court file: data/courts/{slug}.json
+// Shape: { "<ShahrestanOrCityKey>": { courts: [...], districts?: { "<label>": [...] } }, ... }
+async function loadProvinceCourtFile(provinceNameGADM) {
+  if (!provinceNameGADM) return {};
+  const fileName = provinceNameGADM.toLowerCase().replace(/\s+/g, "-");
 
-  for (const k of Object.keys(courtData)) {
-    const kPersian = persianProvinceNames[k] || persianShahrestanNames[k] || k;
-    const cleanK = kPersian.replace(/\s+/g, "").replace("و", "");
-    if (cleanK === cleanTarget) return courtData[k];
+  if (!courtCache[fileName]) {
+    try {
+      const res = await fetch(`data/courts/${fileName}.json`);
+      courtCache[fileName] = res.ok ? await res.json() : {};
+    } catch {
+      courtCache[fileName] = {};
+    }
   }
-  return [];
+  return courtCache[fileName] || {};
 }
 
-// Fast bbox-center for a GeoJSON Polygon/MultiPolygon, computed directly
-// from raw coordinate arrays. Avoids constructing a full Leaflet layer
-// (L.geoJSON(...).getBounds()) purely to find a label anchor point — that
-// pattern was a major source of page-load slowness when run for hundreds
-// of shahrestan/province features up front.
+// Resolves the entry key inside a province's data object matching a GADM/display
+// name, tolerant of English keys, Persian keys, and spacing/"و" differences.
+function resolveEntryKey(provinceData, targetKey) {
+  const targetFa =
+    persianProvinceNames[targetKey] ||
+    persianShahrestanNames[targetKey] ||
+    targetKey;
+  const cleanTarget = targetFa.replace(/\s+/g, "").replace(/و/g, "");
+
+  for (const k of Object.keys(provinceData)) {
+    const kFa = persianProvinceNames[k] || persianShahrestanNames[k] || k;
+    const cleanK = kFa.replace(/\s+/g, "").replace(/و/g, "");
+    if (cleanK === cleanTarget) return k;
+  }
+  return null;
+}
+
+// Shahrestan / province / city level courts — the "courts" array on an entry.
+async function getCourtDataAsync(provinceNameGADM, targetKey) {
+  const provinceData = await loadProvinceCourtFile(provinceNameGADM);
+  const key = resolveEntryKey(provinceData, targetKey);
+  if (!key) return [];
+  return provinceData[key]?.courts || [];
+}
+
+// City-district level courts — the nested "districts" map on a specific city entry
+// (e.g. Tehran city's 22 "منطقه" districts).
+async function getCityDistrictDataAsync(provinceNameGADM, cityKey) {
+  const provinceData = await loadProvinceCourtFile(provinceNameGADM);
+  const key = resolveEntryKey(provinceData, cityKey) || cityKey;
+  return provinceData[key]?.districts || {};
+}
+
 function fastFeatureCenter(feature) {
   const geom = feature.geometry;
   if (!geom) return [0, 0];
-
   let minLng = Infinity,
     maxLng = -Infinity,
     minLat = Infinity,
     maxLat = -Infinity;
-
   const scanRing = (ring) => {
     for (let i = 0; i < ring.length; i++) {
       const lng = ring[i][0],
@@ -119,13 +132,9 @@ function fastFeatureCenter(feature) {
       if (lat > maxLat) maxLat = lat;
     }
   };
-
   if (geom.type === "Polygon") {
     scanRing(geom.coordinates[0]);
   } else if (geom.type === "MultiPolygon") {
-    // Use only the largest ring (by bbox span) so multi-part features
-    // (e.g. a province with small offshore islands) center on the main
-    // landmass rather than the average of all parts.
     let best = null,
       bestSpan = -1;
     geom.coordinates.forEach((poly) => {
@@ -143,28 +152,13 @@ function fastFeatureCenter(feature) {
       }
     });
     if (best) scanRing(best);
-  } else {
-    return [0, 0];
-  }
-
+  } else return [0, 0];
   return [(minLat + maxLat) / 2, (minLng + maxLng) / 2];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CITY DISTRICT REGISTRY
-// Each entry defines one city's district layer.
-// ── Schema ──────────────────────────────────────────────────────────────
-// id          : unique key (matches filename under data/)
-// filePath    : GeoJSON path
-// persianName : Persian display name of the city
-// provinceName: GADM NAME_1 of the parent province (used to auto-activate)
-// viewBounds  : L.latLngBounds([sw], [ne]) — viewport where layer is shown
-// districtCount: total districts (for color palette cycling)
-// getDistrict : fn(feature.properties) → integer district number (1-based)
-// getLabel    : fn(feature.properties) → Persian label string
-// getCourtKey : fn(districtNum) → key for cityDistrictCourts lookup
-// filter      : optional fn(feature) → bool — skip unwanted features
-// ════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 
 const CITY_DISTRICT_REGISTRY = [
   {
@@ -176,10 +170,8 @@ const CITY_DISTRICT_REGISTRY = [
     districtCount: 22,
     getDistrict: (props) => props.district,
     getLabel: (props) => toPersianNum(props.district),
-    getCourtKey: (num) => num,
-    filter: null, // accept all features
-    courtsLookup: () =>
-      typeof tehranDistrictCourts !== "undefined" ? tehranDistrictCourts : {},
+    getCourtKey: (num) => `منطقه ${toPersianNum(num)}`,
+    filter: null,
   },
   {
     id: "isfahan",
@@ -189,42 +181,15 @@ const CITY_DISTRICT_REGISTRY = [
     viewBounds: L.latLngBounds([32.52, 51.48], [32.82, 51.82]),
     districtCount: 15,
     getDistrict: (props) => {
-      // "District 15" → 15
       const en = props["name:en"] || "";
       const m = en.match(/District\s+(\d+)/i);
       return m ? parseInt(m[1], 10) : null;
     },
-    getLabel: (props) => {
-      // Use Persian name directly: "منطقه ۱۵"
-      return props["name"] || props["name:fa"] || "";
-    },
-    getCourtKey: (num) => num,
-    filter: (feature) => {
-      // Only keep the 15 municipal districts (admin_level 9)
-      return feature.properties.admin_level === "9";
-    },
-    courtsLookup: () =>
-      typeof isfahanDistrictCourts !== "undefined" ? isfahanDistrictCourts : {},
+    getLabel: (props) => props["name"] || props["name:fa"] || "",
+    getCourtKey: (num) => String(num),
+    filter: (feature) => feature.properties.admin_level === "9",
   },
-  // ── Add future cities here ───────────────────────────────────────────
-  // {
-  //   id: "mashhad",
-  //   filePath: "data/mashhad-districts.json",
-  //   persianName: "مشهد",
-  //   provinceName: "Razavi Khorasan",
-  //   viewBounds: L.latLngBounds([36.2, 59.4], [36.5, 59.8]),
-  //   districtCount: 13,
-  //   getDistrict: (props) => props.district_no,
-  //   getLabel: (props) => toPersianNum(props.district_no),
-  //   getCourtKey: (num) => num,
-  //   filter: null,
-  //   courtsLookup: () => typeof mashhadDistrictCourts !== "undefined" ? mashhadDistrictCourts : {},
-  // },
 ];
-
-// ═══════════════════════════════════════════════════════════════════════════
-// DISTRICT COLOUR PALETTE — 22 distinct colours (shared across all cities)
-// ═══════════════════════════════════════════════════════════════════════════
 
 const DISTRICT_COLORS = [
   "#2b6cb0",
@@ -250,20 +215,19 @@ const DISTRICT_COLORS = [
   "#4c51bf",
   "#805ad5",
 ];
-
 function districtColor(num) {
   return DISTRICT_COLORS[(num - 1) % DISTRICT_COLORS.length];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MAP STYLES
+// MAP STYLES & STATE
 // ═══════════════════════════════════════════════════════════════════════════
 
 const provinceDefault = {
   color: "#475569",
   weight: 1.8,
   fillColor: "#64748b",
-  fillOpacity: 0.04, // very light — map detail shows through
+  fillOpacity: 0.04,
 };
 const provinceHover = { fillColor: "#b45309", fillOpacity: 0.1, weight: 2.2 };
 const provinceSelected = {
@@ -277,7 +241,7 @@ const shahrestanDefault = {
   color: "#94a3b8",
   weight: 0.6,
   fillColor: "#cbd5e1",
-  fillOpacity: 0.02, // near-transparent — border lines only
+  fillOpacity: 0.02,
   dashArray: "3,3",
 };
 const shahrestanHover = {
@@ -292,23 +256,16 @@ const shahrestanSelected = {
   color: "#334155",
 };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// STATE VARIABLES
-// ═══════════════════════════════════════════════════════════════════════════
-
-let provinceLayers = [];
-let searchActiveMarker = null;
-let selectedProvinceLayer = null;
-let selectedProvinceName = null;
-let selectedProvinceBounds = null;
-let districtLayerGroup = null;
-let selectedDistrictLayer = null;
-let cityLabelLayer = null;
-let provinceLabelGroup = null;
-let shahrestanLabelGroup = null;
-
-// City district runtime state — keyed by registry id
-// cityDistrictState[id] = { layerGroup, labelGroup, selectedLayer, loaded }
+let provinceLayers = [],
+  searchActiveMarker = null,
+  selectedProvinceLayer = null,
+  selectedProvinceName = null,
+  selectedProvinceBounds = null;
+let districtLayerGroup = null,
+  selectedDistrictLayer = null,
+  cityLabelLayer = null,
+  provinceLabelGroup = null,
+  shahrestanLabelGroup = null;
 const cityDistrictState = {};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -332,14 +289,9 @@ function findProvinceData(displayName) {
 function showPopup(title, courts) {
   const popup = document.getElementById("info-popup");
   document.getElementById("popup-title").textContent = title;
-
   const provinceInfo = findProvinceData(title);
-  if (!provinceInfo) {
-    renderStandardPopupBody(courts);
-  } else {
-    renderProvincePopupBody(title, provinceInfo, courts);
-  }
-
+  if (!provinceInfo) renderStandardPopupBody(courts);
+  else renderProvincePopupBody(title, provinceInfo, courts);
   popup.classList.add("visible");
 }
 
@@ -349,137 +301,119 @@ function renderStandardPopupBody(courts) {
     body.innerHTML =
       '<p class="popup-empty">اطلاعاتی برای این منطقه یا شهرستان در سامانه ثبت نشده است.</p>';
   } else {
-    const cards = courts
-      .map((c) => {
-        const specs = (c.specialization || [])
-          .map((s) => `<span class="spec-tag">${s}</span>`)
-          .join("");
-        const mapsUrl = `https://www.google.com/maps?q=${c.lat},${c.lng}`;
-        return `
+    body.innerHTML =
+      `<div class="court-count">${toPersianNum(courts.length)} مرکز قضایی فعال</div>` +
+      courts
+        .map(
+          (c) => `
         <div class="court-card">
           <h3>${c.name}</h3>
           <p class="district-label">🏙️ ${c.district}</p>
           <p>📍 ${c.address}</p>
-          ${specs ? `<div class="spec-list">${specs}</div>` : ""}
-          <a class="maps-link" href="${mapsUrl}" target="_blank" rel="noopener">📌 مشاهده مکان روی نقشه گوگل</a>
-        </div>`;
-      })
-      .join("");
-    body.innerHTML =
-      `<div class="court-count">${toPersianNum(courts.length)} مرکز قضایی فعال</div>` +
-      cards;
+          ${(c.specialization || []).map((s) => `<span class="spec-tag">${s}</span>`).join("")}
+          <a class="maps-link" href="https://www.google.com/maps?q=$${c.lat},${c.lng}" target="_blank">📌 مشاهده مکان روی نقشه گوگل</a>
+        </div>`,
+        )
+        .join("");
   }
 }
 
 function renderProvincePopupBody(title, provinceInfo, courts) {
   const body = document.getElementById("popup-body");
-
-  let courtsHTML = "";
   if (!courts || courts.length === 0) {
-    courtsHTML =
-      '<p class="popup-empty">مراکز قضایی این استان در سامانه ثبت نشده است.</p>';
+    body.innerHTML = `<div id="tab-courts-content" class="active"><p class="popup-empty">مراکز قضایی این استان در سامانه ثبت نشده است.</p></div>`;
   } else {
-    const cards = courts
-      .map((c) => {
-        const specs = (c.specialization || [])
-          .map((s) => `<span class="spec-tag">${s}</span>`)
-          .join("");
-        const mapsUrl = `https://www.google.com/maps?q=${c.lat},${c.lng}`;
-        return `
-        <div class="court-card">
-          <h3>${c.name}</h3>
-          <p class="district-label">🏙️ ${c.district}</p>
-          <p>📍 ${c.address}</p>
-          ${specs ? `<div class="spec-list">${specs}</div>` : ""}
-          <a class="maps-link" href="${mapsUrl}" target="_blank" rel="noopener">📌 مشاهده مکان روی نقشه گوگل</a>
-        </div>`;
-      })
-      .join("");
-    courtsHTML =
-      `<div class="court-count">${toPersianNum(courts.length)} مرکز قضایی فعال</div>` +
-      cards;
-  }
-
-  body.innerHTML = `
-    <div id="tab-courts-content" class="active">
-      ${courtsHTML}
-    </div>
-  `;
-}
-
-function switchPopupTab(tabName) {
-  const courtsBtn = document.getElementById("tab-courts-btn");
-  const citiesBtn = document.getElementById("tab-cities-btn");
-  const courtsContent = document.getElementById("tab-courts-content");
-  const citiesContent = document.getElementById("tab-cities-content");
-
-  if (tabName === "courts") {
-    if (courtsBtn) courtsBtn.classList.add("active");
-    if (citiesBtn) citiesBtn.classList.remove("active");
-    if (courtsContent) courtsContent.classList.add("active");
-    if (citiesContent) citiesContent.classList.remove("active");
-  } else {
-    if (courtsBtn) courtsBtn.classList.remove("active");
-    if (citiesBtn) citiesBtn.classList.add("active");
-    if (courtsContent) courtsContent.classList.remove("active");
-    if (citiesContent) citiesContent.classList.add("active");
+    body.innerHTML = `
+      <div id="tab-courts-content" class="active">
+        <div class="court-count">${toPersianNum(courts.length)} مرکز قضایی فعال</div>
+        ${courts
+          .map(
+            (c) => `
+          <div class="court-card">
+            <h3>${c.name}</h3>
+            <p class="district-label">🏙️ ${c.district}</p>
+            <p>📍 ${c.address}</p>
+            ${(c.specialization || []).map((s) => `<span class="spec-tag">${s}</span>`).join("")}
+            <a class="maps-link" href="https://www.google.com/maps?q=$${c.lat},${c.lng}" target="_blank">📌 مشاهده مکان روی نقشه گوگل</a>
+          </div>`,
+          )
+          .join("")}
+      </div>`;
   }
 }
 
-function zoomToCity(cityName, provinceName) {
-  const foundCity = majorCities.find(
-    (c) =>
-      c.name === cityName ||
-      cityName.includes(c.name) ||
-      c.name.includes(cityName),
+function hidePopup() {
+  document.getElementById("info-popup").classList.remove("visible");
+  if (searchActiveMarker) {
+    map.removeLayer(searchActiveMarker);
+    searchActiveMarker = null;
+  }
+}
+
+function showBackButton() {
+  document.getElementById("back-btn").classList.add("visible");
+}
+function hideBackButton() {
+  document.getElementById("back-btn").classList.remove("visible");
+}
+
+function anyCityDistrictSelected() {
+  return CITY_DISTRICT_REGISTRY.some(
+    (cfg) => cityDistrictState[cfg.id]?.selectedLayer,
   );
-
-  if (foundCity) {
-    map.flyTo([foundCity.lat, foundCity.lng], 11, { duration: 1.0 });
-
-    if (searchActiveMarker) map.removeLayer(searchActiveMarker);
-
-    searchActiveMarker = L.circleMarker([foundCity.lat, foundCity.lng], {
-      radius: 12,
-      fillColor: "#b45309",
-      fillOpacity: 0.6,
-      color: "#ffffff",
-      weight: 3,
-    }).addTo(map);
-
-    searchActiveMarker
-      .bindPopup(`<b>شهر ${cityName}</b><br>استان ${provinceName}`)
-      .openPopup();
-  } else {
-    showToastNotification(
-      `بزرگنمایی محدوده شهرستان انجام شد. شهر: ${cityName}`,
-    );
-    if (selectedProvinceBounds)
-      map.fitBounds(selectedProvinceBounds, { padding: [100, 100] });
-  }
 }
 
-function showToastNotification(message) {
-  let toast = document.getElementById("toast-notification");
-  if (!toast) {
-    toast = document.createElement("div");
-    toast.id = "toast-notification";
-    document.body.appendChild(toast);
-  }
-  toast.textContent = message;
-  toast.className = "visible";
-  setTimeout(() => {
-    toast.className = "";
-  }, 3500);
+// Keeps the back button visible any time the user has zoomed/panned away from
+// the initial full-Iran view, in addition to whenever something is selected.
+function updateBackButtonVisibility() {
+  const hasSelection =
+    !!selectedProvinceLayer ||
+    !!selectedDistrictLayer ||
+    anyCityDistrictSelected();
+  const zoomedIn = initialZoom !== null && map.getZoom() > initialZoom + 0.01;
+  if (hasSelection || zoomedIn) showBackButton();
+  else hideBackButton();
 }
 
-// ── NEW API AUTOCOMPLETE & SEARCH LOGIC ───────────────────────────────────
+function goBack() {
+  if (selectedProvinceLayer) {
+    selectedProvinceLayer.setStyle(provinceDefault);
+    selectedProvinceLayer = null;
+    selectedProvinceName = null;
+    selectedProvinceBounds = null;
+  }
+  if (selectedDistrictLayer) {
+    selectedDistrictLayer.setStyle(shahrestanDefault);
+    selectedDistrictLayer = null;
+  }
+  CITY_DISTRICT_REGISTRY.forEach((cfg) => {
+    const state = cityDistrictState[cfg.id];
+    if (state && state.selectedLayer) {
+      const num = cfg.getDistrict(
+        state.selectedLayer.feature?.properties || {},
+      );
+      state.selectedLayer.setStyle({
+        fillColor: districtColor(num || 1),
+        fillOpacity: 0.22,
+        weight: 1.5,
+        color: "#ffffffcc",
+      });
+      state.selectedLayer = null;
+    }
+  });
+  map.flyToBounds(iranBounds, { padding: [48, 48], duration: 0.8 });
+  hideBackButton();
+  hidePopup();
+  updateCityLabelVisibility();
+  updateProvinceLabelsVisibility();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SEARCH LOGIC
+// ═══════════════════════════════════════════════════════════════════════════
+
 let searchTimeout = null;
 
-// Build a clean "city, province" subtitle from Nominatim's structured
-// address breakdown instead of naively splitting display_name by comma —
-// comma-splitting is unreliable for Persian addresses since the segment
-// order and count varies a lot by place type.
 function buildAddressSubtitle(item) {
   const addr = item.address || {};
   const city =
@@ -489,59 +423,35 @@ function buildAddressSubtitle(item) {
     addr.county ||
     addr.state_district;
   const province = addr.state || addr.province;
-
   if (city && province && city !== province) return `${city}، ${province}`;
   if (province) return province;
   if (city) return city;
-
-  // Fallback: old comma-split behavior if address breakdown is missing
-  const parts = (item.display_name || "").split(",");
-  return parts.slice(1, 3).join(",") || "ایران";
+  return (item.display_name || "").split(",").slice(1, 3).join(",") || "ایران";
 }
 
-// One raw call to Nominatim. dedupe=0 so common street names spread
-// across multiple cities aren't collapsed into a single dominant result;
-// addressdetails=1 so we get a structured city/province breakdown.
 function fetchNominatim(query) {
-  const url =
-    `https://nominatim.openstreetmap.org/search?format=json` +
-    `&q=${encodeURIComponent(query)}` +
-    `&countrycodes=ir&limit=15&accept-language=fa` +
-    `&addressdetails=1&dedupe=0`;
-
+  const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&countrycodes=ir&limit=15&accept-language=fa&addressdetails=1&dedupe=0`;
   return fetch(url, { headers: { "User-Agent": "IranCourtsMap/1.0" } }).then(
     (res) => res.json(),
   );
 }
 
-// Iranian addresses are often built from very specific local fragments —
-// "کوچه شهید X" (a named alley) is frequently not mapped in OSM at all,
-// even when the street and city it branches off are. Nominatim does NOT
-// fall back to partial matches on its own: if the full string doesn't
-// resolve as a whole, it just returns an empty array. So we do the
-// fallback ourselves — progressively drop the last word and retry, until
-// something matches or we run out of words. Whatever level succeeds is
-// returned, tagged so the UI can tell the user it's an approximate match.
 function searchWithFallback(query) {
   const words = query.trim().split(/\s+/);
-
   function attempt(wordCount) {
     if (wordCount < 1)
       return Promise.resolve({ results: [], isPartial: false });
     const trimmedQuery = words.slice(0, wordCount).join(" ");
     return fetchNominatim(trimmedQuery).then((data) => {
-      if (data && data.length > 0) {
+      if (data && data.length > 0)
         return {
           results: data,
           isPartial: wordCount < words.length,
           matchedQuery: trimmedQuery,
         };
-      }
-      // Drop the last word and try again with a shorter query
       return attempt(wordCount - 1);
     });
   }
-
   return attempt(words.length);
 }
 
@@ -551,7 +461,6 @@ function handleSearch(query) {
     resultsContainer.classList.add("hidden");
     return;
   }
-
   if (searchTimeout) clearTimeout(searchTimeout);
 
   searchTimeout = setTimeout(() => {
@@ -562,118 +471,70 @@ function handleSearch(query) {
       .then(({ results: data, isPartial, matchedQuery }) => {
         if (!data || data.length === 0) {
           resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">موردی یافت نشد</div>`;
-          resultsContainer.classList.remove("hidden");
           return;
         }
-
-        // Spread results across distinct provinces/cities rather than
-        // showing 6 near-identical entries from the same place. We keep
-        // at most 2 results per province, in original relevance order,
-        // until we've filled the display cap — this way a name shared
-        // across many provinces actually shows that spread to the user.
-        const DISPLAY_CAP = 8;
-        const PER_PROVINCE_CAP = 2;
         const seenPerProvince = {};
         const picked = [];
-
         for (const item of data) {
           const province =
             (item.address && (item.address.state || item.address.province)) ||
             "?";
           const count = seenPerProvince[province] || 0;
-          if (count >= PER_PROVINCE_CAP) continue;
+          if (count >= 2) continue;
           seenPerProvince[province] = count + 1;
           picked.push(item);
-          if (picked.length >= DISPLAY_CAP) break;
+          if (picked.length >= 8) break;
         }
-
         const partialNotice = isPartial
           ? `<div class="search-item" style="cursor:default; justify-content:center; color:#b45309; font-size:11px;">آدرس دقیق یافت نشد — نزدیک‌ترین نتیجه برای «${matchedQuery}»</div>`
           : "";
-
         resultsContainer.innerHTML =
           partialNotice +
           picked
-            .map((item) => {
-              const parts = item.display_name.split(",");
-              const title = parts[0];
-              const subtitle = buildAddressSubtitle(item);
-              return `
-                <div class="search-item" onclick="selectAddressResult(${item.lat}, ${item.lon}, '${item.display_name.replace(/'/g, "\\'")}')">
-                  <div style="display:flex; flex-direction:column; gap:2px; min-width:0; text-align:right;">
-                    <span class="search-item-title" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${title}</span>
-                    <span style="font-size:10px; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${subtitle}</span>
-                  </div>
-                  <span class="search-item-badge">مکان</span>
-                </div>`;
-            })
+            .map(
+              (item) => `
+        <div class="search-item" onclick="selectAddressResult(${item.lat}, ${item.lon}, '${item.display_name.replace(/'/g, "\\'")}')">
+          <div style="display:flex; flex-direction:column; gap:2px; min-width:0; text-align:right;">
+            <span class="search-item-title" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.display_name.split(",")[0]}</span>
+            <span style="font-size:10px; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${buildAddressSubtitle(item)}</span>
+          </div><span class="search-item-badge">مکان</span>
+        </div>`,
+            )
             .join("");
-        resultsContainer.classList.remove("hidden");
       })
       .catch(() => {
         resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">خطا در جستجو، دوباره تلاش کنید</div>`;
-        resultsContainer.classList.remove("hidden");
       });
   }, 400);
-}
-
-function showResultsIfNotEmpty() {
-  const query = document.getElementById("search-input").value;
-  handleSearch(query);
-}
-
-function hideResultsWithDelay() {
-  setTimeout(() => {
-    const rc = document.getElementById("search-results");
-    if (rc) rc.classList.add("hidden");
-  }, 300);
 }
 
 function selectAddressResult(lat, lon, displayName) {
   document.getElementById("search-input").value = displayName.split(",")[0];
   document.getElementById("search-results").classList.add("hidden");
-
   const latlng = L.latLng(lat, lon);
   if (searchActiveMarker) map.removeLayer(searchActiveMarker);
-
-  // Pin location marker icon onto the map
   searchActiveMarker = L.marker(latlng).addTo(map);
   searchActiveMarker
     .bindPopup(`<b>${displayName.split(",")[0]}</b>`)
     .openPopup();
-
-  // Instant street-level focus zoom
   map.flyTo(latlng, 16, { duration: 1.2 });
-
-  // Wait for the flyTo animation to actually finish (not a guessed delay),
-  // then make sure any lazily-loaded district layer for this area is ready
-  // before scanning for boundary intersection.
-  map.once("moveend", () => {
-    resolveCityDistrictLoadsNear(latlng).then(() => {
-      findLayerAndShowInfo(latlng);
-    });
-  });
+  map.once("moveend", () =>
+    resolveCityDistrictLoadsNear(latlng).then(() =>
+      findLayerAndShowInfo(latlng),
+    ),
+  );
 }
 
-/**
- * Ensure any city-district layer whose viewBounds contains latlng is loaded
- * before we try to do point-in-polygon lookups against it. Returns a promise
- * that resolves once all relevant lazy loads (if any) have settled.
- */
 function resolveCityDistrictLoadsNear(latlng) {
   const pending = [];
   CITY_DISTRICT_REGISTRY.forEach((cfg) => {
     if (!cfg.viewBounds.contains(latlng)) return;
-    if (cityDistrictState[cfg.id]?.loaded) return; // already loaded
+    if (cityDistrictState[cfg.id]?.loaded) return;
     pending.push(
       fetch(cfg.filePath)
         .then((r) => r.json())
         .then((data) => buildCityDistrictLayer(cfg, data))
-        .catch(() =>
-          console.warn(
-            `فایل مناطق ${cfg.persianName} پیدا نشد: ${cfg.filePath}`,
-          ),
-        ),
+        .catch(() => console.warn(`Error loading: ${cfg.filePath}`)),
     );
   });
   return pending.length ? Promise.all(pending) : Promise.resolve();
@@ -694,70 +555,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 
-function hidePopup() {
-  document.getElementById("info-popup").classList.remove("visible");
-  if (searchActiveMarker) {
-    map.removeLayer(searchActiveMarker);
-    searchActiveMarker = null;
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
-// BACK NAVIGATION
-// ═══════════════════════════════════════════════════════════════════════════
-
-function showBackButton() {
-  document.getElementById("back-btn").classList.add("visible");
-}
-function hideBackButton() {
-  document.getElementById("back-btn").classList.remove("visible");
-}
-
-function goBack() {
-  if (selectedProvinceLayer) {
-    selectedProvinceLayer.setStyle(provinceDefault);
-    selectedProvinceLayer = null;
-    selectedProvinceName = null;
-    selectedProvinceBounds = null;
-  }
-  if (selectedDistrictLayer) {
-    selectedDistrictLayer.setStyle(shahrestanDefault);
-    selectedDistrictLayer = null;
-  }
-
-  // Deselect any active city district layer
-  CITY_DISTRICT_REGISTRY.forEach((cfg) => {
-    const state = cityDistrictState[cfg.id];
-    if (state && state.selectedLayer) {
-      const num = cfg.getDistrict(
-        state.selectedLayer.feature?.properties || {},
-      );
-      const color = districtColor(num || 1);
-      state.selectedLayer.setStyle({
-        fillColor: color,
-        fillOpacity: 0.22,
-        weight: 1.5,
-        color: "#ffffffcc",
-      });
-      state.selectedLayer = null;
-    }
-  });
-
-  map.flyToBounds(iranBounds, { padding: [48, 48], duration: 0.8 });
-  hideBackButton();
-  hidePopup();
-  updateCityLabelVisibility();
-  updateProvinceLabelsVisibility();
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PROVINCE LAYERS
+// MAP LAYERS
 // ═══════════════════════════════════════════════════════════════════════════
 
 function onEachProvince(feature, layer) {
   layer.setStyle(provinceDefault);
   provinceLayers.push({ layer, feature });
-
   layer.on("mouseover", () => {
     if (layer !== selectedProvinceLayer) layer.setStyle(provinceHover);
   });
@@ -765,16 +569,14 @@ function onEachProvince(feature, layer) {
     if (layer !== selectedProvinceLayer) layer.setStyle(provinceDefault);
   });
 
-  layer.on("click", (e) => {
+  layer.on("click", async (e) => {
     L.DomEvent.stopPropagation(e);
     if (selectedProvinceLayer && selectedProvinceLayer !== layer)
       selectedProvinceLayer.setStyle(provinceDefault);
-
     layer.setStyle(provinceSelected);
     selectedProvinceLayer = layer;
     selectedProvinceName = feature.properties.NAME_1 || "ناشناس";
     selectedProvinceBounds = layer.getBounds();
-
     map.flyToBounds(selectedProvinceBounds, {
       padding: [40, 40],
       maxZoom: 9,
@@ -783,61 +585,35 @@ function onEachProvince(feature, layer) {
 
     const displayName =
       persianProvinceNames[selectedProvinceName] || selectedProvinceName;
-    showPopup(displayName, getCourtData(selectedProvinceName));
+    const courtsToShow = await getCourtDataAsync(
+      selectedProvinceName,
+      selectedProvinceName,
+    );
+    showPopup(displayName, courtsToShow);
     showBackButton();
     updateCityLabelVisibility();
     updateProvinceLabelsVisibility();
   });
 }
 
-const PROVINCE_LABEL_CENTERS = {
-  Tehran: [35.75, 51.45],
-  Alborz: [35.92, 50.82],
-  Qom: [34.65, 50.95],
-  Isfahan: [32.8, 52.0],
-  Fars: [29.85, 53.0],
-  "Razavi Khorasan": [35.3, 59.2],
-  "North Khorasan": [37.5, 57.1],
-  "South Khorasan": [32.75, 59.0],
-  Kerman: [29.9, 56.9],
-  "Sistan and Baluchestan": [27.8, 60.5],
-  Hormozgan: [27.7, 56.1],
-  Bushehr: [28.9, 51.2],
-  Khuzestan: [31.4, 48.95],
-  Ilam: [33.15, 46.65],
-  Lorestan: [33.6, 48.3],
-  Kermanshah: [34.45, 46.75],
-  Kurdistan: [35.7, 47.0],
-  "West Azerbaijan": [37.7, 45.1],
-  "East Azerbaijan": [38.15, 46.75],
-  Ardabil: [38.45, 48.25],
-  Zanjan: [36.5, 48.3],
-  Gilan: [37.2, 49.55],
-  Mazandaran: [36.25, 52.5],
-  Golestan: [37.2, 54.8],
-  Semnan: [35.45, 54.3],
-  Yazd: [31.85, 54.6],
-  Markazi: [34.4, 49.95],
-  Hamadan: [34.8, 48.55],
-  Qazvin: [36.25, 49.95],
-  "Chaharmahal and Bakhtiari": [32.1, 50.75],
-  "Kohgiluyeh and Boyer-Ahmad": [30.85, 51.05],
-};
-
 function buildProvinceLabels(geojsonData) {
   if (provinceLabelGroup) map.removeLayer(provinceLabelGroup);
   provinceLabelGroup = L.layerGroup();
-
-  geojsonData.features.forEach((feature) => {
-    const name1 = feature.properties.NAME_1 || "";
-    const label = persianProvinceNames[name1] || name1;
-    const center = PROVINCE_LABEL_CENTERS[name1] || fastFeatureCenter(feature);
-
+  const PROVINCE_LABEL_CENTERS = {
+    Tehran: [35.75, 51.45],
+    Alborz: [35.92, 50.82],
+    Qom: [34.65, 50.95],
+    Isfahan: [32.8, 52.0],
+    Fars: [29.85, 53.0],
+    "Razavi Khorasan": [35.3, 59.2],
+  };
+  geojsonData.features.forEach((f) => {
+    const name1 = f.properties.NAME_1 || "";
+    const center = PROVINCE_LABEL_CENTERS[name1] || fastFeatureCenter(f);
     L.marker(center, {
       icon: L.divIcon({
         className: "province-label",
-        html: `<span>${label}</span>`,
-        iconSize: null,
+        html: `<span>${persianProvinceNames[name1] || name1}</span>`,
       }),
       interactive: false,
     }).addTo(provinceLabelGroup);
@@ -854,13 +630,8 @@ function updateProvinceLabelsVisibility() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// COUNTY (SHAHRESTAN) LAYERS
-// ═══════════════════════════════════════════════════════════════════════════
-
 function onEachShahrestan(feature, layer) {
   layer.setStyle(shahrestanDefault);
-
   layer.on("mouseover", () => {
     if (layer !== selectedDistrictLayer) layer.setStyle(shahrestanHover);
   });
@@ -868,17 +639,14 @@ function onEachShahrestan(feature, layer) {
     if (layer !== selectedDistrictLayer) layer.setStyle(shahrestanDefault);
   });
 
-  layer.on("click", (e) => {
+  layer.on("click", async (e) => {
     L.DomEvent.stopPropagation(e);
     if (selectedDistrictLayer && selectedDistrictLayer !== layer)
       selectedDistrictLayer.setStyle(shahrestanDefault);
-
     layer.setStyle(shahrestanSelected);
     selectedDistrictLayer = layer;
-
     const name2 = feature.properties.NAME_2 || "ناشناس";
     const name1 = feature.properties.NAME_1 || "";
-
     map.flyToBounds(layer.getBounds(), {
       padding: [50, 50],
       maxZoom: 12,
@@ -887,8 +655,7 @@ function onEachShahrestan(feature, layer) {
 
     const persianName = persianShahrestanNames[name2] || name2;
     const provinceFa = persianProvinceNames[name1] || name1;
-    const courtsToShow = getCourtData(name2);
-
+    const courtsToShow = await getCourtDataAsync(name1, name2);
     showPopup(`${provinceFa} — ${persianName}`, courtsToShow);
     showBackButton();
   });
@@ -897,19 +664,13 @@ function onEachShahrestan(feature, layer) {
 function buildShahrestanLabels(geojsonData) {
   if (shahrestanLabelGroup) map.removeLayer(shahrestanLabelGroup);
   shahrestanLabelGroup = L.layerGroup();
-
-  geojsonData.features.forEach((feature) => {
-    const name2 = feature.properties.NAME_2 || "";
-    const label = persianShahrestanNames[name2];
+  geojsonData.features.forEach((f) => {
+    const label = persianShahrestanNames[f.properties.NAME_2 || ""];
     if (!label) return;
-
-    const center = fastFeatureCenter(feature);
-    L.marker(center, {
+    L.marker(fastFeatureCenter(f), {
       icon: L.divIcon({
         className: "shahrestan-label",
         html: `<span>${label}</span>`,
-        iconSize: [0, 0],
-        iconAnchor: [0, 0],
       }),
       interactive: false,
     }).addTo(shahrestanLabelGroup);
@@ -930,10 +691,6 @@ function updateShahrestanVisibility() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CITY LABELS
-// ═══════════════════════════════════════════════════════════════════════════
-
 function buildCityLabels() {
   if (cityLabelLayer) return;
   cityLabelLayer = L.layerGroup();
@@ -942,7 +699,6 @@ function buildCityLabels() {
       icon: L.divIcon({
         className: "city-label",
         html: `<span>${city.name}</span>`,
-        iconSize: null,
       }),
       interactive: false,
     }).addTo(cityLabelLayer);
@@ -960,14 +716,6 @@ function updateCityLabelVisibility() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// GENERIC CITY DISTRICT SYSTEM
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Build Leaflet layer + label group for one city config from the registry.
- * Results are stored in cityDistrictState[cfg.id].
- */
 function buildCityDistrictLayer(cfg, geojsonData) {
   const state = {
     layerGroup: L.layerGroup(),
@@ -978,24 +726,21 @@ function buildCityDistrictLayer(cfg, geojsonData) {
   cityDistrictState[cfg.id] = state;
 
   geojsonData.features.forEach((feature) => {
-    // Apply optional filter
     if (cfg.filter && !cfg.filter(feature)) return;
-
     const num = cfg.getDistrict(feature.properties);
     if (num === null || num === undefined) return;
 
-    const color = districtColor(num);
     const defaultStyle = {
       color: "#ffffffcc",
       weight: 1.5,
-      fillColor: color,
-      fillOpacity: 0.22, // lighter so streets/map show through
+      fillColor: districtColor(num),
+      fillOpacity: 0.22,
     };
     const hoverStyle = { fillOpacity: 0.45, weight: 2.2, color: "#fff" };
     const selectedStyle = { fillOpacity: 0.58, weight: 2.5, color: "#fff" };
 
     const layer = L.geoJSON(feature, { style: defaultStyle });
-    layer.feature = feature; // keep reference for goBack()
+    layer.feature = feature;
 
     layer.on("mouseover", () => {
       if (layer !== state.selectedLayer) layer.setStyle(hoverStyle);
@@ -1003,43 +748,41 @@ function buildCityDistrictLayer(cfg, geojsonData) {
     layer.on("mouseout", () => {
       if (layer !== state.selectedLayer) layer.setStyle(defaultStyle);
     });
-    layer.on("click", (e) => {
-      L.DomEvent.stopPropagation(e);
 
-      // Deselect previous
+    layer.on("click", async (e) => {
+      L.DomEvent.stopPropagation(e);
       if (state.selectedLayer && state.selectedLayer !== layer) {
-        const prevNum = cfg.getDistrict(
-          state.selectedLayer.feature?.properties || {},
-        );
-        const prevColor = districtColor(prevNum || 1);
         state.selectedLayer.setStyle({
-          fillColor: prevColor,
+          fillColor: districtColor(
+            cfg.getDistrict(state.selectedLayer.feature?.properties || {}) || 1,
+          ),
           fillOpacity: 0.22,
           weight: 1.5,
           color: "#ffffffcc",
         });
       }
-
       layer.setStyle(selectedStyle);
       state.selectedLayer = layer;
-
       map.flyToBounds(layer.getBounds(), {
         padding: [60, 60],
         maxZoom: 14,
         duration: 0.7,
       });
 
-      const courts = cfg.courtsLookup()[cfg.getCourtKey(num)] || [];
-      const labelText = cfg.getLabel(feature.properties);
-      showPopup(`${labelText} شهرداری ${cfg.persianName}`, courts);
+      const districtData = await getCityDistrictDataAsync(
+        cfg.provinceName,
+        cfg.provinceName,
+      );
+      const courts = districtData[cfg.getCourtKey(num)] || [];
+      showPopup(
+        `${cfg.getLabel(feature.properties)} شهرداری ${cfg.persianName}`,
+        courts,
+      );
       showBackButton();
     });
 
     layer.addTo(state.layerGroup);
-
-    // Number / name label
-    const center = L.geoJSON(feature).getBounds().getCenter();
-    L.marker(center, {
+    L.marker(L.geoJSON(feature).getBounds().getCenter(), {
       icon: L.divIcon({
         className: "city-district-label",
         html: cfg.getLabel(feature.properties),
@@ -1050,38 +793,22 @@ function buildCityDistrictLayer(cfg, geojsonData) {
   });
 }
 
-/**
- * Load a city's GeoJSON if not yet loaded, then build its layers.
- */
 function ensureCityDistrictLoaded(cfg) {
   if (cityDistrictState[cfg.id]?.loaded) return;
   fetch(cfg.filePath)
     .then((r) => r.json())
     .then((data) => buildCityDistrictLayer(cfg, data))
-    .catch(() =>
-      console.warn(`فایل مناطق ${cfg.persianName} پیدا نشد: ${cfg.filePath}`),
-    );
+    .catch(() => console.warn(`Error: ${cfg.filePath}`));
 }
 
-/**
- * Show/hide every city's district layer based on current zoom + map center.
- */
 function updateAllCityDistrictVisibility() {
   const zoom = map.getZoom();
   const center = map.getCenter();
-
   CITY_DISTRICT_REGISTRY.forEach((cfg) => {
-    const inView = cfg.viewBounds.contains(center);
-    const show = zoom >= CITY_ZOOM && inView;
-
-    if (show) {
-      // Lazy-load if needed
-      ensureCityDistrictLoaded(cfg);
-    }
-
+    const show = zoom >= CITY_ZOOM && cfg.viewBounds.contains(center);
+    if (show) ensureCityDistrictLoaded(cfg);
     const state = cityDistrictState[cfg.id];
-    if (!state) return; // not loaded yet
-
+    if (!state) return;
     if (show) {
       if (!map.hasLayer(state.layerGroup)) {
         state.layerGroup.addTo(map);
@@ -1096,37 +823,37 @@ function updateAllCityDistrictVisibility() {
   });
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// WORLD OUTLINE OVERLAY
-// ═══════════════════════════════════════════════════════════════════════════
-
 function addWorldOverlay(iranGeoJSON) {
   const iranRings = [];
   iranGeoJSON.features.forEach((f) => {
-    const geom = f.geometry;
     const coords =
-      geom.type === "Polygon" ? [geom.coordinates] : geom.coordinates;
-    coords.forEach((polygon) =>
-      polygon.forEach((ring) => iranRings.push(ring)),
-    );
+      f.geometry.type === "Polygon"
+        ? [f.geometry.coordinates]
+        : f.geometry.coordinates;
+    coords.forEach((poly) => poly.forEach((ring) => iranRings.push(ring)));
   });
-  const worldBox = [
-    [-180, -90],
-    [180, -90],
-    [180, 90],
-    [-180, 90],
-    [-180, -90],
-  ];
   L.geoJSON(
     {
       type: "Feature",
-      geometry: { type: "Polygon", coordinates: [worldBox, ...iranRings] },
+      geometry: {
+        type: "Polygon",
+        coordinates: [
+          [
+            [-180, -90],
+            [180, -90],
+            [180, 90],
+            [-180, 90],
+            [-180, -90],
+          ],
+          ...iranRings,
+        ],
+      },
     },
     {
       style: {
         color: "transparent",
         weight: 0,
-        fillColor: "#dde8f0", // Matches your map background exactly
+        fillColor: "#dde8f0",
         fillOpacity: 1.0,
         noClip: true,
       },
@@ -1135,76 +862,49 @@ function addWorldOverlay(iranGeoJSON) {
   ).addTo(map);
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// MAP EVENTS
-// ═══════════════════════════════════════════════════════════════════════════
-
 map.on("zoomend moveend", () => {
   updateShahrestanVisibility();
-  updateAllCityDistrictVisibility(); // replaces old Tehran-only call
+  updateAllCityDistrictVisibility();
   updateCityLabelVisibility();
   updateProvinceLabelsVisibility();
-
+  updateBackButtonVisibility();
   const hint = document.getElementById("zoom-hint");
   if (map.getZoom() >= SHAHRESTAN_ZOOM) hint.classList.add("hidden");
   else hint.classList.remove("hidden");
 });
-
-map.on("click", () => {
-  hidePopup();
-});
+map.on("click", () => hidePopup());
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RUN & LOAD DATASETS
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Province layer (IRN level 1)
 fetch("data/gadm41_IRN_1.json")
-  .then((r) => {
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
-  })
+  .then((r) => r.json())
   .then((data) => {
     L.geoJSON(data, { onEachFeature: onEachProvince }).addTo(map);
     addWorldOverlay(data);
     buildProvinceLabels(data);
     updateProvinceLabelsVisibility();
   })
-  .catch((err) => {
-    console.error("خطا در بارگذاری فایل GeoJSON استان‌ها", err);
-    const hint = document.getElementById("zoom-hint");
-    if (hint) {
-      hint.textContent = "خطا در بارگذاری نقشه: " + err.message;
-      hint.classList.remove("hidden");
-    }
-  });
+  .catch((err) => console.error("Error loading provinces", err));
 
-// Shahrestan layer (IRN level 2)
 fetch("data/gadm41_IRN_2.json")
   .then((r) => r.json())
   .then((data) => {
     districtLayerGroup = L.geoJSON(data, { onEachFeature: onEachShahrestan });
     buildShahrestanLabels(data);
     updateShahrestanVisibility();
-  })
-  .catch(() => {
-    console.warn("فایل شهرستان‌ها پیدا نشد — ادامه بدون آن.");
   });
 
-// Pre-load ALL registered city district layers
 CITY_DISTRICT_REGISTRY.forEach((cfg) => {
   fetch(cfg.filePath)
     .then((r) => r.json())
     .then((data) => {
       buildCityDistrictLayer(cfg, data);
       updateAllCityDistrictVisibility();
-    })
-    .catch(() => {
-      console.warn(`فایل مناطق ${cfg.persianName} پیدا نشد: ${cfg.filePath}`);
     });
 });
 
-// Check if coordinates fall inside a given feature polygon
 function isPointInPoly(latlng, polyCoordinates) {
   const x = latlng.lng,
     y = latlng.lat;
@@ -1215,12 +915,11 @@ function isPointInPoly(latlng, polyCoordinates) {
     j = i++
   ) {
     const xi = polyCoordinates[i][0],
-      yi = polyCoordinates[i][1];
-    const xj = polyCoordinates[j][0],
+      yi = polyCoordinates[i][1],
+      xj = polyCoordinates[j][0],
       yj = polyCoordinates[j][1];
-    const intersect =
-      yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
-    if (intersect) inside = !inside;
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)
+      inside = !inside;
   }
   return inside;
 }
@@ -1228,19 +927,16 @@ function isPointInPoly(latlng, polyCoordinates) {
 function pointInFeature(latlng, feature) {
   const geom = feature.geometry;
   if (!geom) return false;
-  if (geom.type === "Polygon") {
+  if (geom.type === "Polygon")
     return isPointInPoly(latlng, geom.coordinates[0]);
-  } else if (geom.type === "MultiPolygon") {
-    for (let i = 0; i < geom.coordinates.length; i++) {
+  if (geom.type === "MultiPolygon") {
+    for (let i = 0; i < geom.coordinates.length; i++)
       if (isPointInPoly(latlng, geom.coordinates[i][0])) return true;
-    }
   }
   return false;
 }
 
-// Scans loaded layers to find boundaries containing the point, then triggers the info panel
-function findLayerAndShowInfo(latlng) {
-  // 1. Check City Districts
+async function findLayerAndShowInfo(latlng) {
   for (const cfg of CITY_DISTRICT_REGISTRY) {
     const state = cityDistrictState[cfg.id];
     if (state && state.layerGroup) {
@@ -1252,9 +948,13 @@ function findLayerAndShowInfo(latlng) {
       if (foundLayer) {
         const num = cfg.getDistrict(foundLayer.feature.properties);
         if (num !== null && num !== undefined) {
+          const districtData = await getCityDistrictDataAsync(
+            cfg.provinceName,
+            cfg.provinceName,
+          );
           showPopup(
             `${cfg.getLabel(foundLayer.feature.properties)} شهرداری ${cfg.persianName}`,
-            cfg.courtsLookup()[cfg.getCourtKey(num)] || [],
+            districtData[cfg.getCourtKey(num)] || [],
           );
           showBackButton();
           return;
@@ -1263,7 +963,6 @@ function findLayerAndShowInfo(latlng) {
     }
   }
 
-  // 2. Check Shahrestans
   if (districtLayerGroup) {
     let foundLayer = null;
     districtLayerGroup.eachLayer((layer) => {
@@ -1272,20 +971,21 @@ function findLayerAndShowInfo(latlng) {
     });
     if (foundLayer) {
       const props = foundLayer.feature.properties;
+      const courtsToShow = await getCourtDataAsync(props.NAME_1, props.NAME_2);
       showPopup(
         `${persianProvinceNames[props.NAME_1] || props.NAME_1} — ${persianShahrestanNames[props.NAME_2] || props.NAME_2}`,
-        getCourtData(props.NAME_2),
+        courtsToShow,
       );
       showBackButton();
       return;
     }
   }
 
-  // 3. Check Provinces
   for (let obj of provinceLayers) {
     if (obj.feature && pointInFeature(latlng, obj.feature)) {
       const name = obj.feature.properties.NAME_1 || "ناشناس";
-      showPopup(persianProvinceNames[name] || name, getCourtData(name));
+      const courtsToShow = await getCourtDataAsync(name, name);
+      showPopup(persianProvinceNames[name] || name, courtsToShow);
       showBackButton();
       return;
     }
