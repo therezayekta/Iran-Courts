@@ -443,40 +443,124 @@ function goBack() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SEARCH LOGIC (Updated to use MAP.IR API)
+// SEARCH LOGIC (map.ir primary + Photon/Komoot fallback)
 // ═══════════════════════════════════════════════════════════════════════════
 
 // GET YOUR FREE KEY FROM app.map.ir
 const MAPIR_API_KEY =
   "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjZmMDA2YjcwMTJkMWJlMGQ2MTdiMjIzOTJiMWM4ZDljOGRiZTJhMzNjNGI4ZjkzYjQwZGM4NDE5ZTM2YTkzMDMzNjc2NWVkNGFkZGNhOGZkIn0.eyJhdWQiOiI0MjU1MCIsImp0aSI6IjZmMDA2YjcwMTJkMWJlMGQ2MTdiMjIzOTJiMWM4ZDljOGRiZTJhMzNjNGI4ZjkzYjQwZGM4NDE5ZTM2YTkzMDMzNjc2NWVkNGFkZGNhOGZkIiwiaWF0IjoxNzgzMDE2NTA0LCJuYmYiOjE3ODMwMTY1MDQsImV4cCI6MTc4NTYwODUwNCwic3ViIjoiIiwic2NvcGVzIjpbImJhc2ljIl19.fOvoF7GftRtoc10H2DVM9hMwRxERt3jwyZyxI97_PNPw8g4VDu3g6JauqFrf4pziAxs4CabokJzRT-T9R_AD4V2eY5bOF-S9txRwU2RanS1TIrUh6SbjixULIjcWs48ocsfqnSxP9iEbDfU3amCn_qnzzxu0PE5s7ruEZ2n875ui6gmTdj8KSkRqTO13kYgMBa5ukDoJZxgl9c33fKAi-yMX8vnBbD9iZ5PrY3OOBG3QaiEduV0yrPw7ohSEXK_m6lJ79B5FPwtwy6xZrVaW2GtkpYAA12nnZLrU6i9N-BjnkWoMBxgJnP8eVn_XrQQvsdK8ui_176oDXrm6uQ_eng";
+
 let searchTimeout = null;
 
-function fetchMapIr(query) {
-  const url = `https://map.ir/search/v2/autocomplete?text=${encodeURIComponent(query)}`;
-  return fetch(url, {
-    headers: { "x-api-key": MAPIR_API_KEY },
-  })
-    .then((res) => res.json())
-    .then((data) => data.value || []);
+// Built from majorCities in map-data.js — no separate table to maintain.
+// If the query starts with a known city name, returns that city's coordinates
+// so Photon can bias results toward it.
+// e.g. "ملایر خیابان بهونار" → { lat: 34.30, lon: 48.51 }
+function detectCityBias(query) {
+  const trimmed = query.trim();
+  const cities = typeof majorCities !== "undefined" ? majorCities : [];
+  for (const city of cities) {
+    if (trimmed.startsWith(city.name)) {
+      return { lat: city.lat, lon: city.lng };
+    }
+  }
+  return null;
 }
 
-function searchWithFallback(query) {
-  const words = query.trim().split(/\s+/);
-  function attempt(wordCount) {
-    if (wordCount < 1)
-      return Promise.resolve({ results: [], isPartial: false });
-    const trimmedQuery = words.slice(0, wordCount).join(" ");
-    return fetchMapIr(trimmedQuery).then((items) => {
-      if (items && items.length > 0)
-        return {
-          results: items,
-          isPartial: wordCount < words.length,
-          matchedQuery: trimmedQuery,
-        };
-      return attempt(wordCount - 1);
-    });
-  }
-  return attempt(words.length);
+// map.ir: tries autocomplete first, falls back to full search.
+// Returns a normalized array of { lat, lng, title, subtitle, source }.
+function fetchMapIr(query) {
+  // No $filter param — it gets URL-encoded and map.ir returns 400
+  const acUrl = `https://map.ir/search/v2/autocomplete?text=${encodeURIComponent(query)}`;
+
+  return fetch(acUrl, { headers: { "x-api-key": MAPIR_API_KEY } })
+    .then((res) => (res.ok ? res.json() : Promise.reject("ac-failed")))
+    .then((data) => {
+      const items = data.value || [];
+      if (items.length > 0) return items;
+      // Autocomplete returned nothing — try the full search endpoint
+      const fullUrl = `https://map.ir/search/v2/?text=${encodeURIComponent(query)}`;
+      return fetch(fullUrl, { headers: { "x-api-key": MAPIR_API_KEY } })
+        .then((r) => r.json())
+        .then((d) => d.value || []);
+    })
+    .then((items) =>
+      items
+        .filter((i) => i?.geom?.coordinates)
+        .map((i) => ({
+          lat: i.geom.coordinates[1],
+          lng: i.geom.coordinates[0],
+          title: i.title || "",
+          subtitle: i.address || i.province || "ایران",
+          source: "mapir",
+        })),
+    );
+}
+
+// Photon (Komoot) — free OSM geocoder, accessible from Iran.
+// Accepts an optional bias {lat, lon} to center results on a specific city.
+// Falls back to Iran's geographic center when no city is detected.
+// Returns a normalized array of { lat, lng, title, subtitle, source }.
+function fetchPhoton(query, bias) {
+  const { lat, lon } = bias || { lat: 32, lon: 53 };
+  const url =
+    `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}` +
+    `&lat=${lat}&lon=${lon}&limit=6`;
+
+  return fetch(url)
+    .then((res) => {
+      if (!res.ok) return { features: [] };
+      return res.json();
+    })
+    .then((data) =>
+      (data.features || [])
+        .filter((f) => f?.geometry?.coordinates)
+        .filter((f) => {
+          // Manually clamp to Iran's bounding box — Photon has no bbox param
+          const fLon = f.geometry.coordinates[0];
+          const fLat = f.geometry.coordinates[1];
+          return fLat >= 24.5 && fLat <= 40.0 && fLon >= 44.0 && fLon <= 64.0;
+        })
+        .map((f) => {
+          const p = f.properties;
+          const name = p.name || p.street || "";
+          const city = p.city || p.county || "";
+          const state = p.state || "";
+          return {
+            lat: f.geometry.coordinates[1],
+            lng: f.geometry.coordinates[0],
+            title: name,
+            subtitle: [city, state].filter(Boolean).join("، ") || "ایران",
+            source: "photon",
+          };
+        }),
+    )
+    .catch(() => []);
+}
+
+// Run both sources in parallel; map.ir results come first.
+// If query starts with a known city name, Photon is biased to that city's coords.
+// Photon results within ~1 km of a map.ir result are dropped as duplicates.
+function fetchCombined(query) {
+  const bias = detectCityBias(query);
+
+  return Promise.allSettled([fetchMapIr(query), fetchPhoton(query, bias)]).then(
+    ([mapirResult, photonResult]) => {
+      const mapir = mapirResult.status === "fulfilled" ? mapirResult.value : [];
+      const photon =
+        photonResult.status === "fulfilled" ? photonResult.value : [];
+
+      const combined = [...mapir];
+      for (const p of photon) {
+        const tooClose = combined.some(
+          (m) =>
+            Math.abs(m.lat - p.lat) < 0.01 && Math.abs(m.lng - p.lng) < 0.01,
+        );
+        if (!tooClose) combined.push(p);
+      }
+      return combined.slice(0, 8);
+    },
+  );
 }
 
 function handleSearch(query) {
@@ -491,47 +575,25 @@ function handleSearch(query) {
     resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">در حال جستجو...</div>`;
     resultsContainer.classList.remove("hidden");
 
-    searchWithFallback(query)
-      .then(({ results: data, isPartial, matchedQuery }) => {
-        if (!data || data.length === 0) {
+    fetchCombined(query)
+      .then((results) => {
+        if (!results || results.length === 0) {
           resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">موردی یافت نشد</div>`;
           return;
         }
 
-        const seenPerProvince = {};
-        const picked = [];
-        for (const item of data) {
-          const province = item.province || "?";
-          const count = seenPerProvince[province] || 0;
-          if (count >= 2) continue;
-          seenPerProvince[province] = count + 1;
-          picked.push(item);
-          if (picked.length >= 8) break;
-        }
-
-        const partialNotice = isPartial
-          ? `<div class="search-item" style="cursor:default; justify-content:center; color:#b45309; font-size:11px;">آدرس دقیق یافت نشد — نزدیک‌ترین نتیجه برای «${matchedQuery}»</div>`
-          : "";
-
-        resultsContainer.innerHTML =
-          partialNotice +
-          picked
-            .map((item) => {
-              // Map.ir returns GeoJSON Point coordinates as [longitude, latitude]
-              const lat = item.geom.coordinates[1];
-              const lng = item.geom.coordinates[0];
-              const title = item.title || "";
-              const subtitle = item.address || item.province || "ایران";
-
-              return `
-        <div class="search-item" onclick="selectAddressResult(${lat}, ${lng}, '${title.replace(/'/g, "\\'")}')">
-          <div style="display:flex; flex-direction:column; gap:2px; min-width:0; text-align:right;">
-            <span class="search-item-title" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${title}</span>
-            <span style="font-size:10px; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${subtitle}</span>
-          </div><span class="search-item-badge">مکان</span>
-        </div>`;
-            })
-            .join("");
+        resultsContainer.innerHTML = results
+          .map(
+            (item) => `
+          <div class="search-item" onclick="selectAddressResult(${item.lat}, ${item.lng}, '${item.title.replace(/'/g, "\\'")}')">
+            <div style="display:flex; flex-direction:column; gap:2px; min-width:0; text-align:right;">
+              <span class="search-item-title" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.title}</span>
+              <span style="font-size:10px; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.subtitle}</span>
+            </div>
+            <span class="search-item-badge">${item.source === "mapir" ? "نقشه" : "OSM"}</span>
+          </div>`,
+          )
+          .join("");
       })
       .catch(() => {
         resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">خطا در جستجو، دوباره تلاش کنید</div>`;
