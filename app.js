@@ -65,54 +65,109 @@ function toPersianNum(n) {
 
 const courtCache = {};
 
-// Loads and caches a province's court file: data/courts/{slug}.json
-// Shape: { "<ShahrestanOrCityKey>": { courts: [...], districts?: { "<label>": [...] } }, ... }
+// Province court file: data/courts/{slug}.json
+// {
+//   province: "Tehran",          // GADM NAME_1
+//   provinceFa: "تهران",
+//   courts: [{ name, code, type }],   // province-wide
+//   areas: {
+//     "Tehran": {                // GADM NAME_2 or custom key
+//       nameFa: "تهران",
+//       courts: [],
+//       districts: { "منطقه ۱": [...] }
+//     }
+//   }
+// }
 async function loadProvinceCourtFile(provinceNameGADM) {
-  if (!provinceNameGADM) return {};
+  if (!provinceNameGADM) return null;
   const fileName = provinceNameGADM.toLowerCase().replace(/\s+/g, "-");
 
   if (!courtCache[fileName]) {
     try {
       const res = await fetch(`data/courts/${fileName}.json`);
-      courtCache[fileName] = res.ok ? await res.json() : {};
+      courtCache[fileName] = res.ok ? await res.json() : null;
     } catch {
-      courtCache[fileName] = {};
+      courtCache[fileName] = null;
     }
   }
-  return courtCache[fileName] || {};
+  return courtCache[fileName];
 }
 
-// Resolves the entry key inside a province's data object matching a GADM/display
-// name, tolerant of English keys, Persian keys, and spacing/"و" differences.
-function resolveEntryKey(provinceData, targetKey) {
-  const targetFa =
-    persianProvinceNames[targetKey] ||
-    persianShahrestanNames[targetKey] ||
-    targetKey;
-  const cleanTarget = targetFa.replace(/\s+/g, "").replace(/و/g, "");
+function normalizeLookupKey(str) {
+  if (!str) return "";
+  return str.replace(/\s+/g, "").replace(/و/g, "");
+}
 
-  for (const k of Object.keys(provinceData)) {
-    const kFa = persianProvinceNames[k] || persianShahrestanNames[k] || k;
-    const cleanK = kFa.replace(/\s+/g, "").replace(/و/g, "");
-    if (cleanK === cleanTarget) return k;
+const AREA_KEY_ALIASES = {
+  Theran: "Tehran",
+};
+
+function resolveAreaKey(provinceData, targetKey) {
+  if (!provinceData?.areas || !targetKey) return null;
+  const areas = provinceData.areas;
+  const direct = AREA_KEY_ALIASES[targetKey] || targetKey;
+  if (areas[direct]) return direct;
+
+  const targetFa =
+    persianShahrestanNames[targetKey] ||
+    persianProvinceNames[targetKey] ||
+    targetKey;
+  const cleanTarget = normalizeLookupKey(targetFa);
+
+  for (const key of Object.keys(areas)) {
+    const area = areas[key];
+    const candidates = [key, area.nameFa, persianShahrestanNames[key]].filter(
+      Boolean,
+    );
+    for (const candidate of candidates) {
+      if (normalizeLookupKey(candidate) === cleanTarget) return key;
+    }
   }
   return null;
 }
 
-// Shahrestan / province / city level courts — the "courts" array on an entry.
-async function getCourtDataAsync(provinceNameGADM, targetKey) {
-  const provinceData = await loadProvinceCourtFile(provinceNameGADM);
-  const key = resolveEntryKey(provinceData, targetKey);
-  if (!key) return [];
-  return provinceData[key]?.courts || [];
+function collectAreaCourts(area) {
+  if (!area) return [];
+  const courts = [...(area.courts || [])];
+  for (const list of Object.values(area.districts || {})) {
+    courts.push(...list);
+  }
+  return courts;
 }
 
-// City-district level courts — the nested "districts" map on a specific city entry
-// (e.g. Tehran city's 22 "منطقه" districts).
-async function getCityDistrictDataAsync(provinceNameGADM, cityKey) {
+function collectProvinceCourts(provinceData) {
+  if (!provinceData) return [];
+  const courts = [...(provinceData.courts || [])];
+  for (const area of Object.values(provinceData.areas || {})) {
+    courts.push(...collectAreaCourts(area));
+  }
+  return courts;
+}
+
+async function getProvinceCourtsAsync(provinceNameGADM) {
   const provinceData = await loadProvinceCourtFile(provinceNameGADM);
-  const key = resolveEntryKey(provinceData, cityKey) || cityKey;
-  return provinceData[key]?.districts || {};
+  return collectProvinceCourts(provinceData);
+}
+
+async function getAreaCourtsAsync(provinceNameGADM, areaKey) {
+  const provinceData = await loadProvinceCourtFile(provinceNameGADM);
+  const key = resolveAreaKey(provinceData, areaKey);
+  if (!key) return [];
+  return collectAreaCourts(provinceData.areas[key]);
+}
+
+async function getDistrictCourtsAsync(provinceNameGADM, areaKey, districtKey) {
+  const provinceData = await loadProvinceCourtFile(provinceNameGADM);
+  const key = resolveAreaKey(provinceData, areaKey);
+  if (!key) return [];
+  return provinceData.areas[key]?.districts?.[districtKey] || [];
+}
+
+async function getCityDistrictMapAsync(provinceNameGADM, cityKey) {
+  const provinceData = await loadProvinceCourtFile(provinceNameGADM);
+  const key = resolveAreaKey(provinceData, cityKey);
+  if (!key) return {};
+  return provinceData.areas[key]?.districts || {};
 }
 
 function fastFeatureCenter(feature) {
@@ -163,6 +218,7 @@ function fastFeatureCenter(feature) {
 const CITY_DISTRICT_REGISTRY = [
   {
     id: "tehran",
+    cityKey: "Tehran",
     filePath: "data/tehran-districts.json",
     persianName: "تهران",
     provinceName: "Tehran",
@@ -175,6 +231,7 @@ const CITY_DISTRICT_REGISTRY = [
   },
   {
     id: "isfahan",
+    cityKey: "Isfahan",
     filePath: "data/isfahan.geojson",
     persianName: "اصفهان",
     provinceName: "Isfahan",
@@ -272,74 +329,66 @@ const cityDistrictState = {};
 // POPUP SYSTEM
 // ═══════════════════════════════════════════════════════════════════════════
 
-function findProvinceData(displayName) {
-  if (!displayName) return null;
-  const normalized = displayName.replace(/\s+/g, "");
-  return iranProvincesAndCities.find((p) => {
-    const pNorm = p.province.replace(/\s+/g, "");
-    return (
-      pNorm === normalized ||
-      pNorm.includes(normalized) ||
-      normalized.includes(pNorm) ||
-      pNorm.replace("و", "") === normalized.replace("و", "")
-    );
-  });
+const COURT_TYPE_CLASSES = {
+  حقوقی: "type-hoquqi",
+  دادگاه: "type-dadgah",
+  صلح: "type-solh",
+  دادسرا: "type-dadsara",
+  خانواده: "type-khanvade",
+  "کیفری دو": "type-keyfari",
+  کیفری: "type-keyfari",
+};
+
+function courtTypeClass(type) {
+  if (!type) return "type-default";
+  if (COURT_TYPE_CLASSES[type]) return COURT_TYPE_CLASSES[type];
+  for (const [label, cls] of Object.entries(COURT_TYPE_CLASSES)) {
+    if (type.includes(label)) return cls;
+  }
+  return "type-default";
+}
+
+function formatCourtCode(code) {
+  if (code === null || code === undefined || code === "") return "—";
+  return toPersianNum(String(code));
+}
+
+function renderCourtList(courts) {
+  const body = document.getElementById("popup-body");
+  if (!courts || courts.length === 0) {
+    body.innerHTML =
+      '<p class="popup-empty">اطلاعاتی برای این منطقه ثبت نشده است.</p>';
+    return;
+  }
+
+  body.innerHTML = `
+    <div class="court-summary">
+      <span class="court-count-badge">${toPersianNum(courts.length)} مرکز قضایی</span>
+    </div>
+    <div class="court-list">
+      ${courts
+        .map(
+          (c) => `
+        <article class="court-row">
+          <h3 class="court-row-name">${c.name}</h3>
+          <div class="court-row-meta">
+            <span class="court-meta-item">
+              <span class="court-meta-label">کد</span>
+              <span class="court-code">${formatCourtCode(c.code)}</span>
+            </span>
+            <span class="court-type-badge ${courtTypeClass(c.type)}">${c.type || "—"}</span>
+          </div>
+        </article>`,
+        )
+        .join("")}
+    </div>`;
 }
 
 function showPopup(title, courts) {
   const popup = document.getElementById("info-popup");
   document.getElementById("popup-title").textContent = title;
-  const provinceInfo = findProvinceData(title);
-  if (!provinceInfo) renderStandardPopupBody(courts);
-  else renderProvincePopupBody(title, provinceInfo, courts);
+  renderCourtList(courts);
   popup.classList.add("visible");
-}
-
-function renderStandardPopupBody(courts) {
-  const body = document.getElementById("popup-body");
-  if (!courts || courts.length === 0) {
-    body.innerHTML =
-      '<p class="popup-empty">اطلاعاتی برای این منطقه یا شهرستان در سامانه ثبت نشده است.</p>';
-  } else {
-    body.innerHTML =
-      `<div class="court-count">${toPersianNum(courts.length)} مرکز قضایی فعال</div>` +
-      courts
-        .map(
-          (c) => `
-        <div class="court-card">
-          <h3>${c.name}</h3>
-          <p class="district-label">🏙️ ${c.district}</p>
-          <p>📍 ${c.address}</p>
-          ${(c.specialization || []).map((s) => `<span class="spec-tag">${s}</span>`).join("")}
-          <a class="maps-link" href="https://www.google.com/maps?q=$${c.lat},${c.lng}" target="_blank">📌 مشاهده مکان روی نقشه گوگل</a>
-        </div>`,
-        )
-        .join("");
-  }
-}
-
-function renderProvincePopupBody(title, provinceInfo, courts) {
-  const body = document.getElementById("popup-body");
-  if (!courts || courts.length === 0) {
-    body.innerHTML = `<div id="tab-courts-content" class="active"><p class="popup-empty">مراکز قضایی این استان در سامانه ثبت نشده است.</p></div>`;
-  } else {
-    body.innerHTML = `
-      <div id="tab-courts-content" class="active">
-        <div class="court-count">${toPersianNum(courts.length)} مرکز قضایی فعال</div>
-        ${courts
-          .map(
-            (c) => `
-          <div class="court-card">
-            <h3>${c.name}</h3>
-            <p class="district-label">🏙️ ${c.district}</p>
-            <p>📍 ${c.address}</p>
-            ${(c.specialization || []).map((s) => `<span class="spec-tag">${s}</span>`).join("")}
-            <a class="maps-link" href="https://www.google.com/maps?q=$${c.lat},${c.lng}" target="_blank">📌 مشاهده مکان روی نقشه گوگل</a>
-          </div>`,
-          )
-          .join("")}
-      </div>`;
-  }
 }
 
 function hidePopup() {
@@ -585,10 +634,7 @@ function onEachProvince(feature, layer) {
 
     const displayName =
       persianProvinceNames[selectedProvinceName] || selectedProvinceName;
-    const courtsToShow = await getCourtDataAsync(
-      selectedProvinceName,
-      selectedProvinceName,
-    );
+    const courtsToShow = await getProvinceCourtsAsync(selectedProvinceName);
     showPopup(displayName, courtsToShow);
     showBackButton();
     updateCityLabelVisibility();
@@ -655,7 +701,7 @@ function onEachShahrestan(feature, layer) {
 
     const persianName = persianShahrestanNames[name2] || name2;
     const provinceFa = persianProvinceNames[name1] || name1;
-    const courtsToShow = await getCourtDataAsync(name1, name2);
+    const courtsToShow = await getAreaCourtsAsync(name1, name2);
     showPopup(`${provinceFa} — ${persianName}`, courtsToShow);
     showBackButton();
   });
@@ -769,9 +815,9 @@ function buildCityDistrictLayer(cfg, geojsonData) {
         duration: 0.7,
       });
 
-      const districtData = await getCityDistrictDataAsync(
+      const districtData = await getCityDistrictMapAsync(
         cfg.provinceName,
-        cfg.provinceName,
+        cfg.cityKey,
       );
       const courts = districtData[cfg.getCourtKey(num)] || [];
       showPopup(
@@ -948,9 +994,9 @@ async function findLayerAndShowInfo(latlng) {
       if (foundLayer) {
         const num = cfg.getDistrict(foundLayer.feature.properties);
         if (num !== null && num !== undefined) {
-          const districtData = await getCityDistrictDataAsync(
+          const districtData = await getCityDistrictMapAsync(
             cfg.provinceName,
-            cfg.provinceName,
+            cfg.cityKey,
           );
           showPopup(
             `${cfg.getLabel(foundLayer.feature.properties)} شهرداری ${cfg.persianName}`,
@@ -971,7 +1017,7 @@ async function findLayerAndShowInfo(latlng) {
     });
     if (foundLayer) {
       const props = foundLayer.feature.properties;
-      const courtsToShow = await getCourtDataAsync(props.NAME_1, props.NAME_2);
+      const courtsToShow = await getAreaCourtsAsync(props.NAME_1, props.NAME_2);
       showPopup(
         `${persianProvinceNames[props.NAME_1] || props.NAME_1} — ${persianShahrestanNames[props.NAME_2] || props.NAME_2}`,
         courtsToShow,
@@ -984,7 +1030,7 @@ async function findLayerAndShowInfo(latlng) {
   for (let obj of provinceLayers) {
     if (obj.feature && pointInFeature(latlng, obj.feature)) {
       const name = obj.feature.properties.NAME_1 || "ناشناس";
-      const courtsToShow = await getCourtDataAsync(name, name);
+      const courtsToShow = await getProvinceCourtsAsync(name);
       showPopup(persianProvinceNames[name] || name, courtsToShow);
       showBackButton();
       return;
