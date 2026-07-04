@@ -49,7 +49,7 @@ window.addEventListener("load", () =>
   setTimeout(() => map.invalidateSize(), 100),
 );
 
-const SHAHRESTAN_ZOOM = 7.0;
+const SHAHRESTAN_ZOOM = 8.5;
 const CITY_ZOOM = 10.0;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -65,9 +65,55 @@ function toPersianNum(n) {
 
 const courtCache = {};
 
-async function loadProvinceCourtFile(provinceNameGADM) {
-  if (!provinceNameGADM) return null;
-  const fileName = provinceNameGADM.toLowerCase().replace(/\s+/g, "-");
+// Maps HDX adm1_pcode → court JSON filename (no extension).
+// HDX uses slightly different English spellings than GADM in some provinces.
+const PCODE_TO_FILENAME = {
+  IR001: "alborz",
+  IR002: "ardabil",
+  IR003: "bushehr",
+  IR004: "chaharmahal-and-bakhtiari",
+  IR005: "east-azerbaijan",
+  IR006: "fars",
+  IR007: "Gilan",
+  IR008: "golestan",
+  IR009: "hamadan",
+  IR010: "hormozgan",
+  IR011: "ilam",
+  IR012: "isfahan",
+  IR013: "kerman",
+  IR014: "kermanshah",
+  IR015: "khuzestan",
+  IR016: "kohgiluyeh-and-buyer-ahmad",
+  IR017: "kurdistan",
+  IR018: "lorestan",
+  IR019: "markazi",
+  IR020: "mazandaran",
+  IR021: "north-khorasan",
+  IR022: "qazvin",
+  IR023: "qom",
+  IR024: "razavi-khorasan",
+  IR025: "semnan",
+  IR026: "sistan-and-baluchestan",
+  IR027: "south-khorasan",
+  IR028: "tehran",
+  IR029: "west-azerbaijan",
+  IR030: "yazd",
+  IR031: "zanjan",
+};
+
+// Resolves a province identifier (HDX adm1_name or adm1_pcode) to a court filename.
+// Falls back to lowercasing and hyphenating the name if no pcode map entry found.
+function resolveProvinceFileName(adm1Name, adm1Pcode) {
+  if (adm1Pcode && PCODE_TO_FILENAME[adm1Pcode]) {
+    return PCODE_TO_FILENAME[adm1Pcode];
+  }
+  if (!adm1Name) return null;
+  return adm1Name.toLowerCase().replace(/\s+/g, "-");
+}
+
+async function loadProvinceCourtFile(adm1Name, adm1Pcode) {
+  const fileName = resolveProvinceFileName(adm1Name, adm1Pcode);
+  if (!fileName) return null;
 
   if (!courtCache[fileName]) {
     try {
@@ -86,7 +132,16 @@ function normalizeLookupKey(str) {
 }
 
 const AREA_KEY_ALIASES = {
+  // Old GADM typo
   Theran: "Tehran",
+  // New OSM-based Tehran shahrestans → court file keys
+  Quds: "Quds",
+  Qarchak: "Qarchak",
+  Pishva: "Pishva",
+  Malard: "Malard",
+  Baharestan: "Baharestan",
+  Pardis: "Pardis",
+  Shahriyar: "Shahriyar",
 };
 
 function resolveAreaKey(provinceData, targetKey) {
@@ -131,27 +186,32 @@ function collectProvinceCourts(provinceData) {
   return courts;
 }
 
-async function getProvinceCourtsAsync(provinceNameGADM) {
-  const provinceData = await loadProvinceCourtFile(provinceNameGADM);
+async function getProvinceCourtsAsync(adm1Name, adm1Pcode) {
+  const provinceData = await loadProvinceCourtFile(adm1Name, adm1Pcode);
   return collectProvinceCourts(provinceData);
 }
 
-async function getAreaCourtsAsync(provinceNameGADM, areaKey) {
-  const provinceData = await loadProvinceCourtFile(provinceNameGADM);
+async function getAreaCourtsAsync(adm1Name, areaKey, adm1Pcode) {
+  const provinceData = await loadProvinceCourtFile(adm1Name, adm1Pcode);
   const key = resolveAreaKey(provinceData, areaKey);
   if (!key) return [];
   return collectAreaCourts(provinceData.areas[key]);
 }
 
-async function getDistrictCourtsAsync(provinceNameGADM, areaKey, districtKey) {
-  const provinceData = await loadProvinceCourtFile(provinceNameGADM);
+async function getDistrictCourtsAsync(
+  adm1Name,
+  areaKey,
+  districtKey,
+  adm1Pcode,
+) {
+  const provinceData = await loadProvinceCourtFile(adm1Name, adm1Pcode);
   const key = resolveAreaKey(provinceData, areaKey);
   if (!key) return [];
   return provinceData.areas[key]?.districts?.[districtKey] || [];
 }
 
-async function getCityDistrictMapAsync(provinceNameGADM, cityKey) {
-  const provinceData = await loadProvinceCourtFile(provinceNameGADM);
+async function getCityDistrictMapAsync(adm1Name, cityKey, adm1Pcode) {
+  const provinceData = await loadProvinceCourtFile(adm1Name, adm1Pcode);
   const key = resolveAreaKey(provinceData, cityKey);
   if (!key) return {};
   return provinceData.areas[key]?.districts || {};
@@ -651,7 +711,7 @@ function onEachProvince(feature, layer) {
       selectedProvinceLayer.setStyle(provinceDefault);
     layer.setStyle(provinceSelected);
     selectedProvinceLayer = layer;
-    selectedProvinceName = feature.properties.NAME_1 || "ناشناس";
+    selectedProvinceName = feature.properties.adm1_name || "ناشناس";
     selectedProvinceBounds = layer.getBounds();
     map.flyToBounds(selectedProvinceBounds, {
       padding: [40, 40],
@@ -660,8 +720,13 @@ function onEachProvince(feature, layer) {
     });
 
     const displayName =
-      persianProvinceNames[selectedProvinceName] || selectedProvinceName;
-    const courtsToShow = await getProvinceCourtsAsync(selectedProvinceName);
+      feature.properties.adm1_name1 ||
+      persianProvinceNames[selectedProvinceName] ||
+      selectedProvinceName;
+    const courtsToShow = await getProvinceCourtsAsync(
+      selectedProvinceName,
+      feature.properties.adm1_pcode,
+    );
     showPopup(displayName, courtsToShow);
     showBackButton();
     updateCityLabelVisibility();
@@ -681,12 +746,12 @@ function buildProvinceLabels(geojsonData) {
     "Razavi Khorasan": [35.3, 59.2],
   };
   geojsonData.features.forEach((f) => {
-    const name1 = f.properties.NAME_1 || "";
+    const name1 = f.properties.adm1_name || "";
     const center = PROVINCE_LABEL_CENTERS[name1] || fastFeatureCenter(f);
     L.marker(center, {
       icon: L.divIcon({
         className: "province-label",
-        html: `<span>${persianProvinceNames[name1] || name1}</span>`,
+        html: `<span>${f.properties.adm1_name1 || persianProvinceNames[name1] || name1}</span>`,
       }),
       interactive: false,
     }).addTo(provinceLabelGroup);
@@ -718,27 +783,39 @@ function onEachShahrestan(feature, layer) {
       selectedDistrictLayer.setStyle(shahrestanDefault);
     layer.setStyle(shahrestanSelected);
     selectedDistrictLayer = layer;
-    const name2 = feature.properties.NAME_2 || "ناشناس";
-    const name1 = feature.properties.NAME_1 || "";
+    const name2 = feature.properties.adm2_name || "ناشناس";
+    const name1 = feature.properties.adm1_name || "";
+    const pcode = feature.properties.adm1_pcode || "";
     map.flyToBounds(layer.getBounds(), {
       padding: [50, 50],
       maxZoom: 12,
       duration: 0.8,
     });
 
-    const persianName = persianShahrestanNames[name2] || name2;
-    const provinceFa = persianProvinceNames[name1] || name1;
-    const courtsToShow = await getAreaCourtsAsync(name1, name2);
+    const persianName = stripShahrestanPrefix(
+      feature.properties.adm2_name1 || persianShahrestanNames[name2] || name2,
+    );
+    const provinceFa =
+      feature.properties.adm1_name1 || persianProvinceNames[name1] || name1;
+    const courtsToShow = await getAreaCourtsAsync(name1, name2, pcode);
     showPopup(`${provinceFa} — ${persianName}`, courtsToShow);
     showBackButton();
   });
+}
+
+function stripShahrestanPrefix(str) {
+  if (!str) return str;
+  return str.replace(/^شهرستان\s+/, "");
 }
 
 function buildShahrestanLabels(geojsonData) {
   if (shahrestanLabelGroup) map.removeLayer(shahrestanLabelGroup);
   shahrestanLabelGroup = L.layerGroup();
   geojsonData.features.forEach((f) => {
-    const label = persianShahrestanNames[f.properties.NAME_2 || ""];
+    const raw =
+      f.properties.adm2_name1 ||
+      persianShahrestanNames[f.properties.adm2_name || ""];
+    const label = stripShahrestanPrefix(raw);
     if (!label) return;
     L.marker(fastFeatureCenter(f), {
       icon: L.divIcon({
@@ -951,7 +1028,7 @@ map.on("click", () => hidePopup());
 // RUN & LOAD DATASETS
 // ═══════════════════════════════════════════════════════════════════════════
 
-fetch("data/gadm41_IRN_1.json")
+fetch(`data/boundaries/irn_admin1_simplified.geojson?v=${Date.now()}`)
   .then((r) => r.json())
   .then((data) => {
     L.geoJSON(data, { onEachFeature: onEachProvince }).addTo(map);
@@ -961,7 +1038,7 @@ fetch("data/gadm41_IRN_1.json")
   })
   .catch((err) => console.error("Error loading provinces", err));
 
-fetch("data/gadm41_IRN_2.json")
+fetch(`data/boundaries/irn_admin2_simplified.geojson?v=${Date.now()}`)
   .then((r) => r.json())
   .then((data) => {
     districtLayerGroup = L.geoJSON(data, { onEachFeature: onEachShahrestan });
@@ -1044,11 +1121,16 @@ async function findLayerAndShowInfo(latlng) {
     });
     if (foundLayer) {
       const props = foundLayer.feature.properties;
-      const courtsToShow = await getAreaCourtsAsync(props.NAME_1, props.NAME_2);
-      showPopup(
-        `${persianProvinceNames[props.NAME_1] || props.NAME_1} — ${persianShahrestanNames[props.NAME_2] || props.NAME_2}`,
-        courtsToShow,
+      const name1 = props.adm1_name || "";
+      const name2 = props.adm2_name || "";
+      const pcode = props.adm1_pcode || "";
+      const courtsToShow = await getAreaCourtsAsync(name1, name2, pcode);
+      const persianName = stripShahrestanPrefix(
+        props.adm2_name1 || persianShahrestanNames[name2] || name2,
       );
+      const provinceFa =
+        props.adm1_name1 || persianProvinceNames[name1] || name1;
+      showPopup(`${provinceFa} — ${persianName}`, courtsToShow);
       showBackButton();
       return;
     }
@@ -1056,9 +1138,13 @@ async function findLayerAndShowInfo(latlng) {
 
   for (let obj of provinceLayers) {
     if (obj.feature && pointInFeature(latlng, obj.feature)) {
-      const name = obj.feature.properties.NAME_1 || "ناشناس";
-      const courtsToShow = await getProvinceCourtsAsync(name);
-      showPopup(persianProvinceNames[name] || name, courtsToShow);
+      const props = obj.feature.properties;
+      const name = props.adm1_name || "ناشناس";
+      const pcode = props.adm1_pcode || "";
+      const courtsToShow = await getProvinceCourtsAsync(name, pcode);
+      const displayName =
+        props.adm1_name1 || persianProvinceNames[name] || name;
+      showPopup(displayName, courtsToShow);
       showBackButton();
       return;
     }

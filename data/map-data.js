@@ -44,6 +44,13 @@ const persianProvinceNames = {
   Tehran: "تهران",
   Yazd: "یزد",
   Zanjan: "زنجان",
+  Baharestan: "بهارستان",
+  Quds: "قدس",
+  Malard: "ملارد",
+  Shahriyar: "شهریار",
+  Qarchak: "قرچک",
+  Pishva: "پیشوا",
+  Pardis: "پردیس",
   // Safety fallbacks for common GADM artifacts
   "Khorasan, Razavi": "خراسان رضوی",
   "Khorasan, North": "خراسان شمالی",
