@@ -503,18 +503,25 @@ function goBack() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SEARCH LOGIC (map.ir primary + Photon/Komoot fallback)
+// SEARCH LOGIC (Nominatim primary + Photon fallback, both free OSM)
 // ═══════════════════════════════════════════════════════════════════════════
-
-// GET YOUR FREE KEY FROM app.map.ir
-const MAPIR_API_KEY =
-  "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjZmMDA2YjcwMTJkMWJlMGQ2MTdiMjIzOTJiMWM4ZDljOGRiZTJhMzNjNGI4ZjkzYjQwZGM4NDE5ZTM2YTkzMDMzNjc2NWVkNGFkZGNhOGZkIn0.eyJhdWQiOiI0MjU1MCIsImp0aSI6IjZmMDA2YjcwMTJkMWJlMGQ2MTdiMjIzOTJiMWM4ZDljOGRiZTJhMzNjNGI4ZjkzYjQwZGM4NDE5ZTM2YTkzMDMzNjc2NWVkNGFkZGNhOGZkIiwiaWF0IjoxNzgzMDE2NTA0LCJuYmYiOjE3ODMwMTY1MDQsImV4cCI6MTc4NTYwODUwNCwic3ViIjoiIiwic2NvcGVzIjpbImJhc2ljIl19.fOvoF7GftRtoc10H2DVM9hMwRxERt3jwyZyxI97_PNPw8g4VDu3g6JauqFrf4pziAxs4CabokJzRT-T9R_AD4V2eY5bOF-S9txRwU2RanS1TIrUh6SbjixULIjcWs48ocsfqnSxP9iEbDfU3amCn_qnzzxu0PE5s7ruEZ2n875ui6gmTdj8KSkRqTO13kYgMBa5ukDoJZxgl9c33fKAi-yMX8vnBbD9iZ5PrY3OOBG3QaiEduV0yrPw7ohSEXK_m6lJ79B5FPwtwy6xZrVaW2GtkpYAA12nnZLrU6i9N-BjnkWoMBxgJnP8eVn_XrQQvsdK8ui_176oDXrm6uQ_eng";
 
 let searchTimeout = null;
 
-// Built from majorCities in map-data.js — no separate table to maintain.
-// If the query starts with a known city name, returns that city's coordinates
-// so Photon can bias results toward it.
+// Iran bounding box for clamping results
+const IRAN_BBOX = { minLat: 24.5, maxLat: 40.0, minLon: 44.0, maxLon: 64.0 };
+
+function inIran(lat, lon) {
+  return (
+    lat >= IRAN_BBOX.minLat &&
+    lat <= IRAN_BBOX.maxLat &&
+    lon >= IRAN_BBOX.minLon &&
+    lon <= IRAN_BBOX.maxLon
+  );
+}
+
+// If the query starts with a known city name, returns that city's coords
+// so geocoders can bias results toward it.
 // e.g. "ملایر خیابان بهونار" → { lat: 34.30, lon: 48.51 }
 function detectCityBias(query) {
   const trimmed = query.trim();
@@ -527,60 +534,76 @@ function detectCityBias(query) {
   return null;
 }
 
-// map.ir: tries autocomplete first, falls back to full search.
-// Returns a normalized array of { lat, lng, title, subtitle, source }.
-function fetchMapIr(query) {
-  // No $filter param — it gets URL-encoded and map.ir returns 400
-  const acUrl = `https://map.ir/search/v2/autocomplete?text=${encodeURIComponent(query)}`;
+// Nominatim (OSM) — most accurate, structured address results.
+// viewbox is set to current map bounds so results are biased toward what's visible.
+// Returns normalized array of { lat, lng, title, subtitle, source }.
+function fetchNominatim(query, mapBounds) {
+  const b = mapBounds || { west: 44, south: 24.5, east: 64, north: 40 };
+  const viewbox = `${b.west},${b.south},${b.east},${b.north}`;
+  // bounded=1 only when zoomed in enough — avoids missing results when zoomed out
+  const zoomed = map.getZoom() >= 8;
+  const url =
+    `https://nominatim.openstreetmap.org/search` +
+    `?q=${encodeURIComponent(query)}` +
+    `&format=jsonv2` +
+    `&countrycodes=ir` +
+    `&viewbox=${viewbox}` +
+    (zoomed ? `&bounded=1` : ``) +
+    `&limit=6` +
+    `&accept-language=fa,en` +
+    `&addressdetails=1`;
 
-  return fetch(acUrl, { headers: { "x-api-key": MAPIR_API_KEY } })
-    .then((res) => (res.ok ? res.json() : Promise.reject("ac-failed")))
-    .then((data) => {
-      const items = data.value || [];
-      if (items.length > 0) return items;
-      // Autocomplete returned nothing — try the full search endpoint
-      const fullUrl = `https://map.ir/search/v2/?text=${encodeURIComponent(query)}`;
-      return fetch(fullUrl, { headers: { "x-api-key": MAPIR_API_KEY } })
-        .then((r) => r.json())
-        .then((d) => d.value || []);
-    })
+  return fetch(url, {
+    headers: {
+      "User-Agent": "IranCourtsMap/1.0 (irancourts.therezayekta.workers.dev)",
+    },
+  })
+    .then((res) => (res.ok ? res.json() : []))
     .then((items) =>
-      items
-        .filter((i) => i?.geom?.coordinates)
-        .map((i) => ({
-          lat: i.geom.coordinates[1],
-          lng: i.geom.coordinates[0],
-          title: i.title || "",
-          subtitle: i.address || i.province || "ایران",
-          source: "mapir",
-        })),
-    );
+      (items || [])
+        .filter(
+          (i) => i.lat && i.lon && inIran(parseFloat(i.lat), parseFloat(i.lon)),
+        )
+        .map((i) => {
+          const addr = i.address || {};
+          const parts = (i.display_name || "").split(",").map((s) => s.trim());
+          const title = parts[0] || i.name || "";
+          const sub = [
+            addr.neighbourhood || addr.suburb || addr.quarter,
+            addr.city || addr.town || addr.village || addr.county,
+            addr.state,
+          ]
+            .filter(Boolean)
+            .join("، ");
+          return {
+            lat: parseFloat(i.lat),
+            lng: parseFloat(i.lon),
+            title,
+            subtitle: sub || "ایران",
+            source: "nominatim",
+          };
+        }),
+    )
+    .catch(() => []);
 }
 
-// Photon (Komoot) — free OSM geocoder, accessible from Iran.
-// Accepts an optional bias {lat, lon} to center results on a specific city.
-// Falls back to Iran's geographic center when no city is detected.
-// Returns a normalized array of { lat, lng, title, subtitle, source }.
+// Photon (Komoot) — fast fuzzy OSM geocoder, good for Persian queries.
+// Biased toward the map center so results match what's visible.
+// Returns normalized array of { lat, lng, title, subtitle, source }.
 function fetchPhoton(query, bias) {
-  const { lat, lon } = bias || { lat: 32, lon: 53 };
+  const { lat, lon } = bias;
   const url =
     `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}` +
-    `&lat=${lat}&lon=${lon}&limit=6`;
+    `&lat=${lat}&lon=${lon}&limit=5`;
 
   return fetch(url)
-    .then((res) => {
-      if (!res.ok) return { features: [] };
-      return res.json();
-    })
+    .then((res) => (res.ok ? res.json() : { features: [] }))
     .then((data) =>
       (data.features || [])
         .filter((f) => f?.geometry?.coordinates)
-        .filter((f) => {
-          // Manually clamp to Iran's bounding box — Photon has no bbox param
-          const fLon = f.geometry.coordinates[0];
-          const fLat = f.geometry.coordinates[1];
-          return fLat >= 24.5 && fLat <= 40.0 && fLon >= 44.0 && fLon <= 64.0;
-        })
+        .filter((f) =>
+          inIran(f.geometry.coordinates[1], f.geometry.coordinates[0]),
+        )
         .map((f) => {
           const p = f.properties;
           const name = p.name || p.street || "";
@@ -598,29 +621,103 @@ function fetchPhoton(query, bias) {
     .catch(() => []);
 }
 
-// Run both sources in parallel; map.ir results come first.
-// If query starts with a known city name, Photon is biased to that city's coords.
-// Photon results within ~1 km of a map.ir result are dropped as duplicates.
-function fetchCombined(query) {
-  const bias = detectCityBias(query);
+// Cache for reverse-geocoded city name at current map center.
+// Refreshed whenever the map is moved significantly or zoom changes.
+let _cachedCityContext = null; // { lat, lng, zoom, cityName }
 
-  return Promise.allSettled([fetchMapIr(query), fetchPhoton(query, bias)]).then(
-    ([mapirResult, photonResult]) => {
-      const mapir = mapirResult.status === "fulfilled" ? mapirResult.value : [];
-      const photon =
-        photonResult.status === "fulfilled" ? photonResult.value : [];
+// Reverse-geocodes the map center using Nominatim to find the city name.
+// Result is cached and reused as long as the center hasn't moved much.
+async function resolveMapCenterCity() {
+  const zoom = map.getZoom();
+  if (zoom < 9) return null; // Only do this when meaningfully zoomed in
 
-      const combined = [...mapir];
-      for (const p of photon) {
-        const tooClose = combined.some(
-          (m) =>
-            Math.abs(m.lat - p.lat) < 0.01 && Math.abs(m.lng - p.lng) < 0.01,
-        );
-        if (!tooClose) combined.push(p);
-      }
-      return combined.slice(0, 8);
-    },
-  );
+  const center = map.getCenter();
+  const c = _cachedCityContext;
+  if (
+    c &&
+    c.zoom === Math.round(zoom) &&
+    Math.abs(c.lat - center.lat) < 0.05 &&
+    Math.abs(c.lng - center.lng) < 0.05
+  ) {
+    return c.cityName; // cache hit
+  }
+
+  try {
+    const url =
+      `https://nominatim.openstreetmap.org/reverse` +
+      `?lat=${center.lat}&lon=${center.lng}` +
+      `&format=jsonv2&accept-language=fa,en`;
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent": "IranCourtsMap/1.0 (irancourts.therezayekta.workers.dev)",
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const addr = data.address || {};
+    const cityName =
+      addr.city || addr.town || addr.village || addr.county || null;
+    _cachedCityContext = {
+      lat: center.lat,
+      lng: center.lng,
+      zoom: Math.round(zoom),
+      cityName,
+    };
+    return cityName;
+  } catch {
+    return null;
+  }
+}
+
+// Invalidate cache on map move so next search re-resolves the city.
+map.on("moveend", () => {
+  _cachedCityContext = null;
+});
+
+// Run Nominatim and Photon in parallel, both biased toward the current map view.
+// When zoomed in (≥9), prepends the detected city name to the query so that
+// "خیابان باهنر" becomes "ملایر خیابان باهنر" automatically.
+// If the user already typed a city name prefix, skips the auto-prepend.
+async function fetchCombined(query) {
+  const mapCenter = map.getCenter();
+  const mapBounds = map.getBounds();
+  const bounds = {
+    west: mapBounds.getWest(),
+    south: mapBounds.getSouth(),
+    east: mapBounds.getEast(),
+    north: mapBounds.getNorth(),
+  };
+
+  const cityBias = detectCityBias(query);
+  const photonBias = cityBias || { lat: mapCenter.lat, lon: mapCenter.lng };
+
+  // Auto-prepend city when zoomed in and user hasn't typed a city name yet
+  let enrichedQuery = query;
+  if (!cityBias && map.getZoom() >= 9) {
+    const detectedCity = await resolveMapCenterCity();
+    if (detectedCity && !query.includes(detectedCity)) {
+      enrichedQuery = `${detectedCity} ${query}`;
+    }
+  }
+
+  return Promise.allSettled([
+    fetchNominatim(enrichedQuery, bounds),
+    fetchPhoton(enrichedQuery, photonBias),
+  ]).then(([nominatimResult, photonResult]) => {
+    const nominatim =
+      nominatimResult.status === "fulfilled" ? nominatimResult.value : [];
+    const photon =
+      photonResult.status === "fulfilled" ? photonResult.value : [];
+
+    const combined = [...nominatim];
+    for (const p of photon) {
+      const tooClose = combined.some(
+        (m) => Math.abs(m.lat - p.lat) < 0.01 && Math.abs(m.lng - p.lng) < 0.01,
+      );
+      if (!tooClose) combined.push(p);
+    }
+    return combined.slice(0, 8);
+  });
 }
 
 function handleSearch(query) {
@@ -650,7 +747,6 @@ function handleSearch(query) {
               <span class="search-item-title" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.title}</span>
               <span style="font-size:10px; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${item.subtitle}</span>
             </div>
-            <span class="search-item-badge">${item.source === "mapir" ? "نقشه" : "OSM"}</span>
           </div>`,
           )
           .join("");
