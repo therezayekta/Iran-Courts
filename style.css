@@ -801,21 +801,6 @@ body {
     0 0 12px rgba(255, 255, 255, 0.8);
 }
 
-.tehran-district-label {
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-  font-family: "Vazirmatn", sans-serif;
-  font-size: 12px;
-  font-weight: 800;
-  color: #ffffff;
-  white-space: nowrap;
-  text-shadow:
-    0 1px 4px rgba(0, 0, 0, 0.9),
-    0 0 2px rgba(0, 0, 0, 0.9);
-  pointer-events: none;
-}
-
 /* ── Leaflet Controls & Attribution ───────────────────────────────────────── */
 
 .leaflet-control-attribution {
@@ -877,32 +862,6 @@ body {
   }
 }
 
-/* ── Toast Notification ─────────────────────────────────────────────────── */
-
-#toast-notification {
-  position: fixed;
-  top: -100px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(30, 41, 59, 0.98);
-  border-bottom: 3px solid var(--accent);
-  color: #ffffff;
-  padding: 12px 24px;
-  border-radius: 8px;
-  font-family: "Vazirmatn", sans-serif;
-  font-size: 13px;
-  font-weight: 700;
-  z-index: 9999;
-  box-shadow: var(--shadow-xl);
-  transition: top 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-  pointer-events: none;
-  direction: rtl;
-}
-
-#toast-notification.visible {
-  top: 76px;
-}
-
 /* ── Generic City District Labels (Isfahan, Tehran, future cities) ──────── */
 
 .city-district-label {
@@ -935,4 +894,62 @@ body {
     0 1px 4px rgba(0, 0, 0, 0.9),
     0 0 2px rgba(0, 0, 0, 0.9);
   pointer-events: none;
+}
+
+/* ── Loading Screen ──────────────────────────────────────────────────────── */
+
+#loader-wrapper {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100dvh;
+  background-color: #0a0a0a; /* Deep minimal dark */
+  z-index: 9999;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  transition:
+    opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0.6s;
+}
+
+.loader-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+
+.loader-logo {
+  font-size: 42px;
+  filter: drop-shadow(0 0 12px rgba(220, 38, 38, 0.4));
+}
+
+.loader-spinner {
+  width: 48px;
+  height: 48px;
+  border: 3px solid #1a1a1a;
+  border-top-color: #dc2626; /* Crimson red accent */
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.loader-text {
+  font-family: "Vazirmatn", sans-serif;
+  color: #e5e5e5;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 1px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loaded #loader-wrapper {
+  opacity: 0;
+  visibility: hidden;
 }

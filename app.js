@@ -21,6 +21,7 @@ const map = L.map("map", {
   zoomSnap: 0.5,
   tap: true,
   tapTolerance: 15,
+  preferCanvas: true, // Switched to canvas renderer for massive performance boost
 });
 
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -65,8 +66,6 @@ function toPersianNum(n) {
 
 const courtCache = {};
 
-// Maps HDX adm1_pcode → court JSON filename (no extension).
-// HDX uses slightly different English spellings than GADM in some provinces.
 const PCODE_TO_FILENAME = {
   IR001: "alborz",
   IR002: "ardabil",
@@ -101,8 +100,6 @@ const PCODE_TO_FILENAME = {
   IR031: "zanjan",
 };
 
-// Resolves a province identifier (HDX adm1_name or adm1_pcode) to a court filename.
-// Falls back to lowercasing and hyphenating the name if no pcode map entry found.
 function resolveProvinceFileName(adm1Name, adm1Pcode) {
   if (adm1Pcode && PCODE_TO_FILENAME[adm1Pcode]) {
     return PCODE_TO_FILENAME[adm1Pcode];
@@ -130,17 +127,15 @@ function normalizeLookupKey(str) {
   if (!str) return "";
   return str
     .replace(/^(شهرستان|بخش)\s*/, "")
-    .replace(/ي/g, "ی") // Fix Arabic Yeh
-    .replace(/ك/g, "ک") // Fix Arabic Kaf
-    .replace(/‌/g, "") // Remove ZWNJ
+    .replace(/ي/g, "ی")
+    .replace(/ك/g, "ک")
+    .replace(/‌/g, "")
     .replace(/\s+/g, "")
     .replace(/و/g, "");
 }
 
 const AREA_KEY_ALIASES = {
-  // Old GADM typo
   Theran: "Tehran",
-  // New OSM-based Tehran shahrestans → court file keys
   Quds: "Quds",
   Qarchak: "Qarchak",
   Pishva: "Pishva",
@@ -513,8 +508,8 @@ function goBack() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 let searchTimeout = null;
+let searchAbortController = null;
 
-// Iran bounding box for clamping results
 const IRAN_BBOX = { minLat: 24.5, maxLat: 40.0, minLon: 44.0, maxLon: 64.0 };
 
 function inIran(lat, lon) {
@@ -526,9 +521,6 @@ function inIran(lat, lon) {
   );
 }
 
-// If the query starts with a known city name, returns that city's coords
-// so geocoders can bias results toward it.
-// e.g. "ملایر خیابان بهونار" → { lat: 34.30, lon: 48.51 }
 function detectCityBias(query) {
   const trimmed = query.trim();
   const cities = typeof majorCities !== "undefined" ? majorCities : [];
@@ -540,13 +532,9 @@ function detectCityBias(query) {
   return null;
 }
 
-// Nominatim (OSM) — most accurate, structured address results.
-// viewbox is set to current map bounds so results are biased toward what's visible.
-// Returns normalized array of { lat, lng, title, subtitle, source }.
-function fetchNominatim(query, mapBounds) {
+function fetchNominatim(query, mapBounds, signal) {
   const b = mapBounds || { west: 44, south: 24.5, east: 64, north: 40 };
   const viewbox = `${b.west},${b.south},${b.east},${b.north}`;
-  // bounded=1 only when zoomed in enough — avoids missing results when zoomed out
   const zoomed = map.getZoom() >= 8;
   const url =
     `https://nominatim.openstreetmap.org/search` +
@@ -563,6 +551,7 @@ function fetchNominatim(query, mapBounds) {
     headers: {
       "User-Agent": "IranCourtsMap/1.0 (irancourts.therezayekta.workers.dev)",
     },
+    signal,
   })
     .then((res) => (res.ok ? res.json() : []))
     .then((items) =>
@@ -590,19 +579,19 @@ function fetchNominatim(query, mapBounds) {
           };
         }),
     )
-    .catch(() => []);
+    .catch((e) => {
+      if (e.name === "AbortError") throw e;
+      return [];
+    });
 }
 
-// Photon (Komoot) — fast fuzzy OSM geocoder, good for Persian queries.
-// Biased toward the map center so results match what's visible.
-// Returns normalized array of { lat, lng, title, subtitle, source }.
-function fetchPhoton(query, bias) {
+function fetchPhoton(query, bias, signal) {
   const { lat, lon } = bias;
   const url =
     `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}` +
     `&lat=${lat}&lon=${lon}&limit=5`;
 
-  return fetch(url)
+  return fetch(url, { signal })
     .then((res) => (res.ok ? res.json() : { features: [] }))
     .then((data) =>
       (data.features || [])
@@ -624,18 +613,17 @@ function fetchPhoton(query, bias) {
           };
         }),
     )
-    .catch(() => []);
+    .catch((e) => {
+      if (e.name === "AbortError") throw e;
+      return [];
+    });
 }
 
-// Cache for reverse-geocoded city name at current map center.
-// Refreshed whenever the map is moved significantly or zoom changes.
-let _cachedCityContext = null; // { lat, lng, zoom, cityName }
+let _cachedCityContext = null;
 
-// Reverse-geocodes the map center using Nominatim to find the city name.
-// Result is cached and reused as long as the center hasn't moved much.
 async function resolveMapCenterCity() {
   const zoom = map.getZoom();
-  if (zoom < 9) return null; // Only do this when meaningfully zoomed in
+  if (zoom < 9) return null;
 
   const center = map.getCenter();
   const c = _cachedCityContext;
@@ -645,7 +633,7 @@ async function resolveMapCenterCity() {
     Math.abs(c.lat - center.lat) < 0.05 &&
     Math.abs(c.lng - center.lng) < 0.05
   ) {
-    return c.cityName; // cache hit
+    return c.cityName;
   }
 
   try {
@@ -675,16 +663,11 @@ async function resolveMapCenterCity() {
   }
 }
 
-// Invalidate cache on map move so next search re-resolves the city.
 map.on("moveend", () => {
   _cachedCityContext = null;
 });
 
-// Run Nominatim and Photon in parallel, both biased toward the current map view.
-// When zoomed in (≥9), prepends the detected city name to the query so that
-// "خیابان باهنر" becomes "ملایر خیابان باهنر" automatically.
-// If the user already typed a city name prefix, skips the auto-prepend.
-async function fetchCombined(query) {
+async function fetchCombined(query, signal) {
   const mapCenter = map.getCenter();
   const mapBounds = map.getBounds();
   const bounds = {
@@ -697,7 +680,6 @@ async function fetchCombined(query) {
   const cityBias = detectCityBias(query);
   const photonBias = cityBias || { lat: mapCenter.lat, lon: mapCenter.lng };
 
-  // Auto-prepend city when zoomed in and user hasn't typed a city name yet
   let enrichedQuery = query;
   if (!cityBias && map.getZoom() >= 9) {
     const detectedCity = await resolveMapCenterCity();
@@ -707,8 +689,8 @@ async function fetchCombined(query) {
   }
 
   return Promise.allSettled([
-    fetchNominatim(enrichedQuery, bounds),
-    fetchPhoton(enrichedQuery, photonBias),
+    fetchNominatim(enrichedQuery, bounds, signal),
+    fetchPhoton(enrichedQuery, photonBias, signal),
   ]).then(([nominatimResult, photonResult]) => {
     const nominatim =
       nominatimResult.status === "fulfilled" ? nominatimResult.value : [];
@@ -732,13 +714,18 @@ function handleSearch(query) {
     resultsContainer.classList.add("hidden");
     return;
   }
+
   if (searchTimeout) clearTimeout(searchTimeout);
+  if (searchAbortController) searchAbortController.abort();
+
+  searchAbortController = new AbortController();
+  const signal = searchAbortController.signal;
 
   searchTimeout = setTimeout(() => {
     resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">در حال جستجو...</div>`;
     resultsContainer.classList.remove("hidden");
 
-    fetchCombined(query)
+    fetchCombined(query, signal)
       .then((results) => {
         if (!results || results.length === 0) {
           resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">موردی یافت نشد</div>`;
@@ -757,7 +744,8 @@ function handleSearch(query) {
           )
           .join("");
       })
-      .catch(() => {
+      .catch((err) => {
+        if (err.name === "AbortError") return;
         resultsContainer.innerHTML = `<div class="search-item" style="cursor:default; justify-content:center; color:#64748b;">خطا در جستجو، دوباره تلاش کنید</div>`;
       });
   }, 400);
@@ -819,7 +807,6 @@ function onEachProvince(feature, layer) {
     const popupRect = popupEl.getBoundingClientRect();
     const mapRect = map.getContainer().getBoundingClientRect();
 
-    // How much of the map, on each side, is covered by the popup panel
     const isPopupVisible = popupEl.classList.contains("visible");
     const overlapLeft =
       isPopupVisible && popupRect.left <= mapRect.left
@@ -1112,45 +1099,6 @@ function updateAllCityDistrictVisibility() {
   });
 }
 
-function addWorldOverlay(iranGeoJSON) {
-  const iranRings = [];
-  iranGeoJSON.features.forEach((f) => {
-    const coords =
-      f.geometry.type === "Polygon"
-        ? [f.geometry.coordinates]
-        : f.geometry.coordinates;
-    coords.forEach((poly) => poly.forEach((ring) => iranRings.push(ring)));
-  });
-  L.geoJSON(
-    {
-      type: "Feature",
-      geometry: {
-        type: "Polygon",
-        coordinates: [
-          [
-            [-180, -90],
-            [180, -90],
-            [180, 90],
-            [-180, 90],
-            [-180, -90],
-          ],
-          ...iranRings,
-        ],
-      },
-    },
-    {
-      style: {
-        color: "transparent",
-        weight: 0,
-        fillColor: "#dde8f0",
-        fillOpacity: 1.0,
-        noClip: true,
-      },
-      interactive: false,
-    },
-  ).addTo(map);
-}
-
 map.on("zoomend moveend", () => {
   updateShahrestanVisibility();
   updateAllCityDistrictVisibility();
@@ -1167,22 +1115,36 @@ map.on("click", () => hidePopup());
 // RUN & LOAD DATASETS
 // ═══════════════════════════════════════════════════════════════════════════
 
-fetch(`data/boundaries/irn_admin1_simplified.geojson?v=${Date.now()}`)
+const loadAdmin1 = fetch(
+  `data/boundaries/irn_admin1_simplified.geojson?v=${Date.now()}`,
+)
   .then((r) => r.json())
   .then((data) => {
     L.geoJSON(data, { onEachFeature: onEachProvince }).addTo(map);
-    addWorldOverlay(data);
     buildProvinceLabels(data);
     updateProvinceLabelsVisibility();
   })
   .catch((err) => console.error("Error loading provinces", err));
 
-fetch(`data/boundaries/irn_admin2_simplified.geojson?v=${Date.now()}`)
+const loadAdmin2 = fetch(
+  `data/boundaries/irn_admin2_simplified.geojson?v=${Date.now()}`,
+)
   .then((r) => r.json())
   .then((data) => {
     districtLayerGroup = L.geoJSON(data, { onEachFeature: onEachShahrestan });
     buildShahrestanLabels(data);
     updateShahrestanVisibility();
+  });
+
+Promise.all([loadAdmin1, loadAdmin2])
+  .then(() => {
+    setTimeout(() => {
+      document.body.classList.add("loaded");
+    }, 500);
+  })
+  .catch((err) => {
+    console.error("Critical error loading map data", err);
+    document.body.classList.add("loaded");
   });
 
 CITY_DISTRICT_REGISTRY.forEach((cfg) => {
