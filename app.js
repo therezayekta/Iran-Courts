@@ -128,7 +128,13 @@ async function loadProvinceCourtFile(adm1Name, adm1Pcode) {
 
 function normalizeLookupKey(str) {
   if (!str) return "";
-  return str.replace(/\s+/g, "").replace(/و/g, "");
+  return str
+    .replace(/^(شهرستان|بخش)\s*/, "")
+    .replace(/ي/g, "ی") // Fix Arabic Yeh
+    .replace(/ك/g, "ک") // Fix Arabic Kaf
+    .replace(/‌/g, "") // Remove ZWNJ
+    .replace(/\s+/g, "")
+    .replace(/و/g, "");
 }
 
 const AREA_KEY_ALIASES = {
@@ -809,11 +815,48 @@ function onEachProvince(feature, layer) {
     selectedProvinceLayer = layer;
     selectedProvinceName = feature.properties.adm1_name || "ناشناس";
     selectedProvinceBounds = layer.getBounds();
-    map.flyToBounds(selectedProvinceBounds, {
-      padding: [40, 40],
-      maxZoom: 9,
-      duration: 0.9,
-    });
+    const popupEl = document.getElementById("info-popup");
+    const popupRect = popupEl.getBoundingClientRect();
+    const mapRect = map.getContainer().getBoundingClientRect();
+
+    // How much of the map, on each side, is covered by the popup panel
+    const isPopupVisible = popupEl.classList.contains("visible");
+    const overlapLeft =
+      isPopupVisible && popupRect.left <= mapRect.left
+        ? popupRect.right - mapRect.left
+        : 0;
+    const overlapRight =
+      isPopupVisible && popupRect.right >= mapRect.right
+        ? mapRect.right - popupRect.left
+        : 0;
+    const overlapBottom =
+      isPopupVisible && popupRect.bottom >= mapRect.bottom
+        ? mapRect.bottom - popupRect.top
+        : 0;
+
+    const paddingTopLeft = [40 + Math.max(0, overlapLeft), 40];
+    const paddingBottomRight = [
+      40 + Math.max(0, overlapRight),
+      40 + Math.max(0, overlapBottom),
+    ];
+
+    const fitZoom = map.getBoundsZoom(
+      selectedProvinceBounds,
+      false,
+      paddingTopLeft,
+      paddingBottomRight,
+    );
+    const targetZoom = Math.min(9, Math.max(SHAHRESTAN_ZOOM, fitZoom));
+
+    const targetPoint = map
+      .project(selectedProvinceBounds.getCenter(), targetZoom)
+      .subtract([
+        (paddingBottomRight[0] - paddingTopLeft[0]) / 2,
+        (paddingBottomRight[1] - paddingTopLeft[1]) / 2,
+      ]);
+    const targetCenter = map.unproject(targetPoint, targetZoom);
+
+    map.flyTo(targetCenter, targetZoom, { duration: 0.9 });
 
     const displayName =
       feature.properties.adm1_name1 ||
@@ -857,7 +900,7 @@ function buildProvinceLabels(geojsonData) {
 function updateProvinceLabelsVisibility() {
   if (!provinceLabelGroup) return;
   const zoom = map.getZoom();
-  if (zoom < SHAHRESTAN_ZOOM && !selectedProvinceName) {
+  if (zoom < SHAHRESTAN_ZOOM) {
     if (!map.hasLayer(provinceLabelGroup)) provinceLabelGroup.addTo(map);
   } else {
     if (map.hasLayer(provinceLabelGroup)) map.removeLayer(provinceLabelGroup);
