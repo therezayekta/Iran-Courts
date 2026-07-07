@@ -21,7 +21,10 @@ const map = L.map("map", {
   zoomSnap: 0.5,
   tap: true,
   tapTolerance: 15,
-  preferCanvas: true, // Switched to canvas renderer for massive performance boost
+  // NOTE: preferCanvas was causing stale "ghost" rectangles to appear while
+  // zooming/panning quickly (Canvas renderer doesn't always fully clear
+  // between fast transitions). SVG is plenty fast for ~450 polygons.
+  preferCanvas: false,
 });
 
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -33,6 +36,42 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
 }).addTo(map);
 
 const iranBounds = L.latLngBounds([24.5, 44.0], [40.0, 64.0]);
+
+// Pane for the "fade out everything that isn't Iran" mask.
+// z-index sits above the tile pane (200) and below the default overlay
+// pane (400) where the province/shahrestan polygons live, so the mask
+// darkens the basemap without covering Iran itself.
+map.createPane("maskPane");
+map.getPane("maskPane").style.zIndex = 350;
+map.getPane("maskPane").style.pointerEvents = "none";
+
+function buildOutsideIranMask(admin1GeoJSON) {
+  const world = [
+    [-89, -179],
+    [-89, 179],
+    [89, 179],
+    [89, -179],
+  ];
+  const holes = [];
+  admin1GeoJSON.features.forEach((f) => {
+    const geom = f.geometry;
+    if (!geom) return;
+    const addRing = (ring) => holes.push(ring.map(([lng, lat]) => [lat, lng]));
+    if (geom.type === "Polygon") {
+      addRing(geom.coordinates[0]);
+    } else if (geom.type === "MultiPolygon") {
+      geom.coordinates.forEach((poly) => addRing(poly[0]));
+    }
+  });
+
+  L.polygon([world, ...holes], {
+    pane: "maskPane",
+    stroke: false,
+    fillColor: "#0b1220",
+    fillOpacity: 0.55,
+    interactive: false,
+  }).addTo(map);
+}
 
 let initialZoom = null;
 
@@ -82,7 +121,7 @@ const PCODE_TO_FILENAME = {
   IR013: "kerman",
   IR014: "kermanshah",
   IR015: "khuzestan",
-  IR016: "kohgiluyeh-and-buyer-ahmad",
+  IR016: "kohgiluyeh-and-boyer-ahmad",
   IR017: "kurdistan",
   IR018: "lorestan",
   IR019: "markazi",
@@ -609,11 +648,9 @@ async function resolveMapCenterCity() {
   const zoom = map.getZoom();
   if (zoom < 9) return null;
 
-  // Priority 1: If a shahrestan is explicitly selected, use its English name
-  // (which is what enrichedQuery feeds into the geocoder bias)
+  // Priority 1: explicit shahrestan selection
   if (selectedDistrictLayer) {
     const props = selectedDistrictLayer.feature?.properties || {};
-    // Return the Persian name so the query prefix matches what users expect
     const persianName = stripShahrestanPrefix(
       props.adm2_name1 ||
         persianShahrestanNames[props.adm2_name] ||
@@ -622,7 +659,7 @@ async function resolveMapCenterCity() {
     if (persianName) return persianName;
   }
 
-  // Priority 2: Check which shahrestan polygon the map center falls inside
+  // Priority 2: point-in-polygon against loaded shahrestan GeoJSON
   if (districtLayerGroup) {
     const center = map.getCenter();
     let foundProps = null;
@@ -653,7 +690,7 @@ async function resolveMapCenterCity() {
     }
   }
 
-  // Priority 3: Nominatim reverse geocode fallback (only if no shahrestan data available)
+  // Priority 3: Nominatim reverse geocode fallback
   const center = map.getCenter();
   const c = _cachedCityContext;
   if (
@@ -832,12 +869,10 @@ function onEachProvince(feature, layer) {
     selectedProvinceLayer = layer;
     selectedProvinceName = feature.properties.adm1_name || "ناشناس";
     selectedProvinceBounds = layer.getBounds();
-    // Determine padding: account for the popup panel on the left side
     const popupEl = document.getElementById("info-popup");
     const isPopupVisible = popupEl.classList.contains("visible");
     const isMobile = window.innerWidth <= 600;
     const popupWidth = isPopupVisible && !isMobile ? 360 : 0;
-    // paddingLeft accounts for the popup panel so the province centers in the remaining map area
     const pad = isMobile ? 30 : 48;
     const paddingTopLeft = L.point(pad + popupWidth, pad);
     const paddingBottomRight = L.point(pad, pad);
@@ -849,9 +884,15 @@ function onEachProvince(feature, layer) {
       duration: 0.9,
     });
     map.once("moveend", () => {
+      // Force shahrestans visible regardless of zoom — user explicitly selected this province
+      if (districtLayerGroup && !map.hasLayer(districtLayerGroup)) {
+        map.addLayer(districtLayerGroup);
+      }
+      if (shahrestanLabelGroup && !map.hasLayer(shahrestanLabelGroup)) {
+        shahrestanLabelGroup.addTo(map);
+      }
       updateCityLabelVisibility();
       updateProvinceLabelsVisibility();
-      updateShahrestanVisibility();
     });
 
     const displayName =
@@ -916,7 +957,7 @@ function onEachShahrestan(feature, layer) {
       selectedDistrictLayer.setStyle(shahrestanDefault);
     layer.setStyle(shahrestanSelected);
     selectedDistrictLayer = layer;
-    _cachedCityContext = null; // force search context to re-resolve from new selection
+    _cachedCityContext = null;
     const name2 = feature.properties.adm2_name || "ناشناس";
     const name1 = feature.properties.adm1_name || "";
     const pcode = feature.properties.adm1_pcode || "";
@@ -965,7 +1006,9 @@ function buildShahrestanLabels(geojsonData) {
 function updateShahrestanVisibility() {
   if (!districtLayerGroup) return;
   const zoom = map.getZoom();
-  if (zoom >= SHAHRESTAN_ZOOM) {
+  // Also show shahrestans when a province is selected, regardless of zoom level
+  const shouldShow = zoom >= SHAHRESTAN_ZOOM || !!selectedProvinceLayer;
+  if (shouldShow) {
     if (!map.hasLayer(districtLayerGroup)) map.addLayer(districtLayerGroup);
     if (shahrestanLabelGroup && !map.hasLayer(shahrestanLabelGroup))
       shahrestanLabelGroup.addTo(map);
@@ -1109,6 +1152,15 @@ function updateAllCityDistrictVisibility() {
 }
 
 map.on("zoomend moveend", () => {
+  // If the user manually zooms/pans back out past the shahrestan threshold,
+  // clear the "province selected" state so shahrestan borders + city labels
+  // actually hide again instead of staying forced-visible until Back is pressed.
+  if (selectedProvinceLayer && map.getZoom() < SHAHRESTAN_ZOOM - 0.5) {
+    selectedProvinceLayer.setStyle(provinceDefault);
+    selectedProvinceLayer = null;
+    selectedProvinceName = null;
+    selectedProvinceBounds = null;
+  }
   updateShahrestanVisibility();
   updateAllCityDistrictVisibility();
   updateCityLabelVisibility();
@@ -1132,6 +1184,7 @@ const loadAdmin1 = fetch(
     L.geoJSON(data, { onEachFeature: onEachProvince }).addTo(map);
     buildProvinceLabels(data);
     updateProvinceLabelsVisibility();
+    buildOutsideIranMask(data);
   })
   .catch((err) => console.error("Error loading provinces", err));
 
