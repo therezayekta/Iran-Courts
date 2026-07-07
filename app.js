@@ -463,6 +463,7 @@ function goBack() {
   if (selectedDistrictLayer) {
     selectedDistrictLayer.setStyle(shahrestanDefault);
     selectedDistrictLayer = null;
+    _cachedCityContext = null;
   }
   CITY_DISTRICT_REGISTRY.forEach((cfg) => {
     const state = cityDistrictState[cfg.id];
@@ -608,6 +609,51 @@ async function resolveMapCenterCity() {
   const zoom = map.getZoom();
   if (zoom < 9) return null;
 
+  // Priority 1: If a shahrestan is explicitly selected, use its English name
+  // (which is what enrichedQuery feeds into the geocoder bias)
+  if (selectedDistrictLayer) {
+    const props = selectedDistrictLayer.feature?.properties || {};
+    // Return the Persian name so the query prefix matches what users expect
+    const persianName = stripShahrestanPrefix(
+      props.adm2_name1 ||
+        persianShahrestanNames[props.adm2_name] ||
+        props.adm2_name,
+    );
+    if (persianName) return persianName;
+  }
+
+  // Priority 2: Check which shahrestan polygon the map center falls inside
+  if (districtLayerGroup) {
+    const center = map.getCenter();
+    let foundProps = null;
+    districtLayerGroup.eachLayer((layer) => {
+      if (
+        !foundProps &&
+        layer.feature &&
+        pointInFeature(center, layer.feature)
+      ) {
+        foundProps = layer.feature.properties;
+      }
+    });
+    if (foundProps) {
+      const persianName = stripShahrestanPrefix(
+        foundProps.adm2_name1 ||
+          persianShahrestanNames[foundProps.adm2_name] ||
+          foundProps.adm2_name,
+      );
+      if (persianName) {
+        _cachedCityContext = {
+          lat: center.lat,
+          lng: center.lng,
+          zoom: Math.round(zoom),
+          cityName: persianName,
+        };
+        return persianName;
+      }
+    }
+  }
+
+  // Priority 3: Nominatim reverse geocode fallback (only if no shahrestan data available)
   const center = map.getCenter();
   const c = _cachedCityContext;
   if (
@@ -786,50 +832,22 @@ function onEachProvince(feature, layer) {
     selectedProvinceLayer = layer;
     selectedProvinceName = feature.properties.adm1_name || "ناشناس";
     selectedProvinceBounds = layer.getBounds();
+    // Determine padding: account for the popup panel on the left side
     const popupEl = document.getElementById("info-popup");
-    const popupRect = popupEl.getBoundingClientRect();
-    const mapRect = map.getContainer().getBoundingClientRect();
-
     const isPopupVisible = popupEl.classList.contains("visible");
-    const overlapLeft =
-      isPopupVisible && popupRect.left <= mapRect.left
-        ? popupRect.right - mapRect.left
-        : 0;
-    const overlapRight =
-      isPopupVisible && popupRect.right >= mapRect.right
-        ? mapRect.right - popupRect.left
-        : 0;
-    const overlapBottom =
-      isPopupVisible && popupRect.bottom >= mapRect.bottom
-        ? mapRect.bottom - popupRect.top
-        : 0;
+    const isMobile = window.innerWidth <= 600;
+    const popupWidth = isPopupVisible && !isMobile ? 360 : 0;
+    // paddingLeft accounts for the popup panel so the province centers in the remaining map area
+    const pad = isMobile ? 30 : 48;
+    const paddingTopLeft = L.point(pad + popupWidth, pad);
+    const paddingBottomRight = L.point(pad, pad);
 
-    const paddingTopLeft = [40 + Math.max(0, overlapLeft), 40];
-    const paddingBottomRight = [
-      40 + Math.max(0, overlapRight),
-      40 + Math.max(0, overlapBottom),
-    ];
-
-    const fitZoom = map.getBoundsZoom(
-      selectedProvinceBounds,
-      false,
+    map.flyToBounds(selectedProvinceBounds, {
       paddingTopLeft,
       paddingBottomRight,
-    );
-    const targetZoom = Math.min(
-      CITY_ZOOM - 0.1,
-      Math.max(SHAHRESTAN_ZOOM, fitZoom),
-    );
-
-    const targetPoint = map
-      .project(selectedProvinceBounds.getCenter(), targetZoom)
-      .subtract([
-        (paddingBottomRight[0] - paddingTopLeft[0]) / 2,
-        (paddingBottomRight[1] - paddingTopLeft[1]) / 2,
-      ]);
-    const targetCenter = map.unproject(targetPoint, targetZoom);
-
-    map.flyTo(targetCenter, targetZoom, { duration: 0.9 });
+      maxZoom: CITY_ZOOM - 0.1,
+      duration: 0.9,
+    });
     map.once("moveend", () => {
       updateCityLabelVisibility();
       updateProvinceLabelsVisibility();
@@ -898,16 +916,16 @@ function onEachShahrestan(feature, layer) {
       selectedDistrictLayer.setStyle(shahrestanDefault);
     layer.setStyle(shahrestanSelected);
     selectedDistrictLayer = layer;
+    _cachedCityContext = null; // force search context to re-resolve from new selection
     const name2 = feature.properties.adm2_name || "ناشناس";
     const name1 = feature.properties.adm1_name || "";
     const pcode = feature.properties.adm1_pcode || "";
     const bounds = layer.getBounds();
-    const fitZoom = map.getBoundsZoom(bounds, false, [50, 50], [50, 50]);
-    const targetZoom = Math.min(
-      CITY_ZOOM - 0.1,
-      Math.max(SHAHRESTAN_ZOOM, fitZoom),
-    );
-    map.flyTo(bounds.getCenter(), targetZoom, { duration: 0.8 });
+    map.flyToBounds(bounds, {
+      padding: [50, 50],
+      maxZoom: CITY_ZOOM - 0.1,
+      duration: 0.8,
+    });
 
     const persianName = stripShahrestanPrefix(
       feature.properties.adm2_name1 || persianShahrestanNames[name2] || name2,
