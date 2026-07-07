@@ -277,23 +277,6 @@ const CITY_DISTRICT_REGISTRY = [
     getCourtKey: (num) => `منطقه ${toPersianNum(num)}`,
     filter: null,
   },
-  {
-    id: "isfahan",
-    cityKey: "Isfahan",
-    filePath: "data/isfahan.geojson",
-    persianName: "اصفهان",
-    provinceName: "Isfahan",
-    viewBounds: L.latLngBounds([32.52, 51.48], [32.82, 51.82]),
-    districtCount: 15,
-    getDistrict: (props) => {
-      const en = props["name:en"] || "";
-      const m = en.match(/District\s+(\d+)/i);
-      return m ? parseInt(m[1], 10) : null;
-    },
-    getLabel: (props) => props["name"] || props["name:fa"] || "",
-    getCourtKey: (num) => String(num),
-    filter: (feature) => feature.properties.admin_level === "9",
-  },
 ];
 
 const DISTRICT_COLORS = [
@@ -833,7 +816,10 @@ function onEachProvince(feature, layer) {
       paddingTopLeft,
       paddingBottomRight,
     );
-    const targetZoom = Math.min(9, Math.max(SHAHRESTAN_ZOOM, fitZoom));
+    const targetZoom = Math.min(
+      CITY_ZOOM - 0.1,
+      Math.max(SHAHRESTAN_ZOOM, fitZoom),
+    );
 
     const targetPoint = map
       .project(selectedProvinceBounds.getCenter(), targetZoom)
@@ -844,6 +830,11 @@ function onEachProvince(feature, layer) {
     const targetCenter = map.unproject(targetPoint, targetZoom);
 
     map.flyTo(targetCenter, targetZoom, { duration: 0.9 });
+    map.once("moveend", () => {
+      updateCityLabelVisibility();
+      updateProvinceLabelsVisibility();
+      updateShahrestanVisibility();
+    });
 
     const displayName =
       feature.properties.adm1_name1 ||
@@ -855,8 +846,6 @@ function onEachProvince(feature, layer) {
     );
     showPopup(displayName, courtsToShow);
     showBackButton();
-    updateCityLabelVisibility();
-    updateProvinceLabelsVisibility();
   });
 }
 
@@ -912,11 +901,13 @@ function onEachShahrestan(feature, layer) {
     const name2 = feature.properties.adm2_name || "ناشناس";
     const name1 = feature.properties.adm1_name || "";
     const pcode = feature.properties.adm1_pcode || "";
-    map.flyToBounds(layer.getBounds(), {
-      padding: [50, 50],
-      maxZoom: 12,
-      duration: 0.8,
-    });
+    const bounds = layer.getBounds();
+    const fitZoom = map.getBoundsZoom(bounds, false, [50, 50], [50, 50]);
+    const targetZoom = Math.min(
+      CITY_ZOOM - 0.1,
+      Math.max(SHAHRESTAN_ZOOM, fitZoom),
+    );
+    map.flyTo(bounds.getCenter(), targetZoom, { duration: 0.8 });
 
     const persianName = stripShahrestanPrefix(
       feature.properties.adm2_name1 || persianShahrestanNames[name2] || name2,
@@ -1146,15 +1137,6 @@ Promise.all([loadAdmin1, loadAdmin2])
     console.error("Critical error loading map data", err);
     document.body.classList.add("loaded");
   });
-
-CITY_DISTRICT_REGISTRY.forEach((cfg) => {
-  fetch(cfg.filePath)
-    .then((r) => r.json())
-    .then((data) => {
-      buildCityDistrictLayer(cfg, data);
-      updateAllCityDistrictVisibility();
-    });
-});
 
 function isPointInPoly(latlng, polyCoordinates) {
   const x = latlng.lng,
