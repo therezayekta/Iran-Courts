@@ -423,15 +423,11 @@ function formatCourtCode(code) {
   return toPersianNum(String(code));
 }
 
-function renderCourtList(courts) {
-  const body = document.getElementById("popup-body");
+function buildCourtListHTML(courts) {
   if (!courts || courts.length === 0) {
-    body.innerHTML =
-      '<p class="popup-empty">اطلاعاتی برای این منطقه ثبت نشده است.</p>';
-    return;
+    return '<p class="popup-empty">اطلاعاتی برای این منطقه ثبت نشده است.</p>';
   }
-
-  body.innerHTML = `
+  return `
     <div class="court-summary">
       <span class="court-count-badge">${toPersianNum(courts.length)} مرکز قضایی</span>
     </div>
@@ -454,10 +450,234 @@ function renderCourtList(courts) {
     </div>`;
 }
 
+function renderCourtList(courts) {
+  document.getElementById("popup-body").innerHTML = buildCourtListHTML(courts);
+}
+
+// Show popup with a simple court list (shahrestan / district level)
 function showPopup(title, courts) {
   const popup = document.getElementById("info-popup");
   document.getElementById("popup-title").textContent = title;
   renderCourtList(courts);
+  popup.classList.add("visible");
+}
+
+// Show popup with tabs:
+// - Tab 0 : مراکز قضایی  (all courts in province, flat list)
+// - Tab 1…N : one tab per city/shahrestan in the province
+
+// ── Tab zoom helpers ─────────────────────────────────────────────────────────
+
+function flyToShahrestanByName(persianName) {
+  if (!districtLayerGroup) return;
+  let best = null;
+  districtLayerGroup.eachLayer((layer) => {
+    if (best) return;
+    const props = layer.feature?.properties || {};
+    const fa = stripShahrestanPrefix(
+      props.adm2_name1 ||
+        persianShahrestanNames[props.adm2_name] ||
+        props.adm2_name ||
+        "",
+    );
+    const clean = (s) => s.replace(/\s+/g, "").replace(/[‌]/g, "");
+    if (clean(fa) === clean(persianName)) best = layer;
+  });
+  if (best) {
+    map.flyToBounds(best.getBounds(), {
+      padding: [50, 50],
+      maxZoom: CITY_ZOOM - 0.1,
+      duration: 0.7,
+    });
+  }
+}
+
+function flyToProvinceAreaByNameFa(nameFa) {
+  // nameFa is the area.nameFa like "شهرستان اسلامشهر" or "بخش رودهن"
+  const cleaned = nameFa.replace(/^شهرستان\s+|^بخش\s+/, "").trim();
+  flyToShahrestanByName(cleaned);
+}
+
+// State for the currently open province popup — lets us swap the tab bar
+// between "cities" level and "districts of one city" level without ever
+// nesting two tab bars inside one another (which was causing 3 stacked
+// scrollbars: popup body + outer tab bar + inner tab bar).
+let popupState = { cityTabs: [], allCourts: [] };
+
+function showProvincePopup(title, allCourts, provinceData) {
+  const popup = document.getElementById("info-popup");
+  document.getElementById("popup-title").textContent = title;
+
+  const body = document.getElementById("popup-body");
+
+  const areas = provinceData ? Object.values(provinceData.areas || {}) : [];
+  const cityTabs = areas.filter(
+    (a) =>
+      (a.courts || []).length > 0 || Object.keys(a.districts || {}).length > 0,
+  );
+
+  if (cityTabs.length === 0) {
+    body.innerHTML = buildCourtListHTML(allCourts);
+    popup.classList.add("visible");
+    return;
+  }
+
+  // Fixed shell: one tab bar + one panel container. Only their *contents*
+  // get swapped when navigating between the cities level and a city's
+  // districts level — never nested.
+  body.innerHTML = `
+    <div id="popup-tab-bar" class="popup-tab-bar"></div>
+    <div id="popup-panels"></div>`;
+
+  popupState = { cityTabs, allCourts };
+  renderCityLevelTabs();
+  popup.classList.add("visible");
+}
+
+// ── Level 1: "مراکز قضایی" + one tab per city in the province ──────────────
+function renderCityLevelTabs() {
+  const { cityTabs, allCourts } = popupState;
+  const tabBar = document.getElementById("popup-tab-bar");
+  const panels = document.getElementById("popup-panels");
+
+  tabBar.innerHTML = `
+    <button class="popup-tab active" onclick="activateTab(this, 'popup-panel-courts')">مراکز قضایی</button>
+    ${cityTabs
+      .map((a, i) => {
+        const label = (a.nameFa || "").replace(/^شهرستان\s+|^بخش\s+/, "");
+        const nameFaEsc = (a.nameFa || "").replace(/'/g, "\\'");
+        const hasDistricts = Object.keys(a.districts || {}).length > 0;
+        return `<button class="popup-tab" onclick="selectCityTab(this, ${i}, ${hasDistricts}, '${nameFaEsc}')">${label}</button>`;
+      })
+      .join("")}
+  `;
+
+  panels.innerHTML =
+    `<div class="popup-panel active" id="popup-panel-courts">${buildCourtListHTML(allCourts)}</div>` +
+    cityTabs
+      .map((a, i) => {
+        const hasDistricts = Object.keys(a.districts || {}).length > 0;
+        if (hasDistricts) {
+          // Content is built lazily by renderDistrictLevelTabs when opened —
+          // this id just needs to exist as a placeholder.
+          return `<div class="popup-panel" id="popup-panel-city-${i}"></div>`;
+        }
+        const areaCourts = [
+          ...(a.courts || []),
+          ...Object.values(a.districts || {}).flat(),
+        ];
+        return `<div class="popup-panel" id="popup-panel-city-${i}">${buildCourtListHTML(areaCourts)}</div>`;
+      })
+      .join("");
+}
+
+function selectCityTab(btn, cityIdx, hasDistricts, nameFaEsc) {
+  flyToProvinceAreaByNameFa(nameFaEsc);
+  if (hasDistricts) {
+    renderDistrictLevelTabs(cityIdx);
+  } else {
+    activateTab(btn, "popup-panel-city-" + cityIdx);
+  }
+}
+
+// ── Level 2: replaces the whole tab bar with "‹ back" + "همه" + district tabs ──
+function renderDistrictLevelTabs(cityIdx) {
+  const area = popupState.cityTabs[cityIdx];
+  const tabBar = document.getElementById("popup-tab-bar");
+  const panels = document.getElementById("popup-panels");
+
+  const districtKeys = Object.keys(area.districts || {});
+  const cityLabel = (area.nameFa || "").replace(/^شهرستان\s+|^بخش\s+/, "");
+  const allAreaCourts = [
+    ...(area.courts || []),
+    ...Object.values(area.districts || {}).flat(),
+  ];
+
+  tabBar.innerHTML = `
+    <button class="popup-tab back-tab" onclick="renderCityLevelTabs()" title="بازگشت به شهرستان‌ها">‹ ${cityLabel}</button>
+    <button class="popup-tab active" onclick="activateTab(this, 'popup-panel-dist-all')">همه</button>
+    ${districtKeys
+      .map(
+        (dk, j) =>
+          `<button class="popup-tab" onclick="activateTab(this, 'popup-panel-dist-${j}')">${dk}</button>`,
+      )
+      .join("")}
+  `;
+
+  panels.innerHTML =
+    `<div class="popup-panel active" id="popup-panel-dist-all">${buildCourtListHTML(allAreaCourts)}</div>` +
+    districtKeys
+      .map(
+        (dk, j) =>
+          `<div class="popup-panel" id="popup-panel-dist-${j}">${buildCourtListHTML(area.districts[dk])}</div>`,
+      )
+      .join("");
+}
+
+// Generic tab activator — works for any single-level tab bar (province
+// cities-level, districts-level, or the plain shahrestan popup below).
+function activateTab(btn, panelId) {
+  const bar = btn.closest(".popup-tab-bar");
+  if (bar)
+    bar
+      .querySelectorAll(".popup-tab")
+      .forEach((t) => t.classList.remove("active"));
+  const panels =
+    document.getElementById("popup-panels") ||
+    document.getElementById("popup-body");
+  panels
+    .querySelectorAll(":scope > .popup-panel")
+    .forEach((p) => p.classList.remove("active"));
+  btn.classList.add("active");
+  const panel = document.getElementById(panelId);
+  if (panel) panel.classList.add("active");
+}
+
+// Kept for showShahrestanPopup, which only ever has ONE tab-bar level
+// (courts + بخش tabs) so nesting was never an issue there.
+function switchPopupTab(btn, tabId) {
+  activateTab(btn, "popup-panel-" + tabId);
+}
+
+// Show popup for a shahrestan — courts tab + optional بخش tabs
+function showShahrestanPopup(title, area) {
+  const popup = document.getElementById("info-popup");
+  document.getElementById("popup-title").textContent = title;
+  const body = document.getElementById("popup-body");
+
+  const districtKeys = Object.keys(area?.districts || {});
+  if (districtKeys.length === 0) {
+    // No بخش — plain list
+    body.innerHTML = buildCourtListHTML(area?.courts || []);
+    popup.classList.add("visible");
+    return;
+  }
+
+  const allCourts = [
+    ...(area.courts || []),
+    ...Object.values(area.districts).flat(),
+  ];
+
+  const tabBar = `
+    <div class="popup-tab-bar">
+      <button class="popup-tab active" data-tab="sh-all" onclick="switchPopupTab(this, 'sh-all')">همه</button>
+      ${districtKeys
+        .map(
+          (dk, j) =>
+            `<button class="popup-tab" data-tab="sh-dist-${j}" onclick="switchPopupTab(this,'sh-dist-${j}')">${dk}</button>`,
+        )
+        .join("")}
+    </div>`;
+
+  const allPanel = `<div class="popup-panel active" id="popup-panel-sh-all">${buildCourtListHTML(allCourts)}</div>`;
+  const distPanels = districtKeys
+    .map(
+      (dk, j) =>
+        `<div class="popup-panel" id="popup-panel-sh-dist-${j}">${buildCourtListHTML(area.districts[dk])}</div>`,
+    )
+    .join("");
+
+  body.innerHTML = tabBar + allPanel + distPanels;
   popup.classList.add("visible");
 }
 
@@ -504,6 +724,7 @@ function goBack() {
     selectedDistrictLayer = null;
     _cachedCityContext = null;
   }
+  tehranDistrictsExplicitlyEnabled = false;
   CITY_DISTRICT_REGISTRY.forEach((cfg) => {
     const state = cityDistrictState[cfg.id];
     if (state && state.selectedLayer) {
@@ -863,6 +1084,7 @@ function onEachProvince(feature, layer) {
 
   layer.on("click", async (e) => {
     L.DomEvent.stopPropagation(e);
+    placeClickPin(e.latlng);
     if (selectedProvinceLayer && selectedProvinceLayer !== layer)
       selectedProvinceLayer.setStyle(provinceDefault);
     layer.setStyle(provinceSelected);
@@ -877,33 +1099,65 @@ function onEachProvince(feature, layer) {
     const paddingTopLeft = L.point(pad + popupWidth, pad);
     const paddingBottomRight = L.point(pad, pad);
 
-    map.flyToBounds(selectedProvinceBounds, {
-      paddingTopLeft,
-      paddingBottomRight,
-      maxZoom: CITY_ZOOM - 0.1,
-      duration: 0.9,
-    });
-    map.once("moveend", () => {
-      // Force shahrestans visible regardless of zoom — user explicitly selected this province
-      if (districtLayerGroup && !map.hasLayer(districtLayerGroup)) {
-        map.addLayer(districtLayerGroup);
-      }
-      if (shahrestanLabelGroup && !map.hasLayer(shahrestanLabelGroup)) {
-        shahrestanLabelGroup.addTo(map);
-      }
-      updateCityLabelVisibility();
-      updateProvinceLabelsVisibility();
-    });
+    // Check if this province has a city district registry entry (e.g. Tehran)
+    const cityDistrictCfg = CITY_DISTRICT_REGISTRY.find(
+      (cfg) => cfg.provinceName === selectedProvinceName,
+    );
+
+    if (cityDistrictCfg) {
+      // Fly directly into the city district view and load districts immediately
+      map.flyToBounds(cityDistrictCfg.viewBounds, {
+        padding: [40, 40],
+        maxZoom: CITY_ZOOM + 0.5,
+        duration: 0.9,
+      });
+      map.once("moveend", () => {
+        ensureCityDistrictLoaded(cityDistrictCfg);
+        // Poll until the async fetch completes and layer is ready
+        const showWhenReady = setInterval(() => {
+          const state = cityDistrictState[cityDistrictCfg.id];
+          if (state && state.loaded) {
+            clearInterval(showWhenReady);
+            if (!map.hasLayer(state.layerGroup)) {
+              state.layerGroup.addTo(map);
+              state.labelGroup.addTo(map);
+            }
+          }
+        }, 50);
+        updateCityLabelVisibility();
+        updateProvinceLabelsVisibility();
+      });
+    } else {
+      map.flyToBounds(selectedProvinceBounds, {
+        paddingTopLeft,
+        paddingBottomRight,
+        maxZoom: CITY_ZOOM - 0.1,
+        duration: 0.9,
+      });
+      map.once("moveend", () => {
+        // Force shahrestans visible regardless of zoom — user explicitly selected this province
+        if (districtLayerGroup && !map.hasLayer(districtLayerGroup)) {
+          map.addLayer(districtLayerGroup);
+        }
+        if (shahrestanLabelGroup && !map.hasLayer(shahrestanLabelGroup)) {
+          shahrestanLabelGroup.addTo(map);
+        }
+        updateCityLabelVisibility();
+        updateProvinceLabelsVisibility();
+      });
+    }
 
     const displayName =
       feature.properties.adm1_name1 ||
       persianProvinceNames[selectedProvinceName] ||
       selectedProvinceName;
-    const courtsToShow = await getProvinceCourtsAsync(
+    const pcode = feature.properties.adm1_pcode;
+    const provinceData = await loadProvinceCourtFile(
       selectedProvinceName,
-      feature.properties.adm1_pcode,
+      pcode,
     );
-    showPopup(displayName, courtsToShow);
+    const courtsToShow = collectProvinceCourts(provinceData);
+    showProvincePopup(displayName, courtsToShow, provinceData);
     showBackButton();
   });
 }
@@ -953,6 +1207,8 @@ function onEachShahrestan(feature, layer) {
 
   layer.on("click", async (e) => {
     L.DomEvent.stopPropagation(e);
+    placeClickPin(e.latlng);
+    const alreadySelected = selectedDistrictLayer === layer;
     if (selectedDistrictLayer && selectedDistrictLayer !== layer)
       selectedDistrictLayer.setStyle(shahrestanDefault);
     layer.setStyle(shahrestanSelected);
@@ -962,20 +1218,46 @@ function onEachShahrestan(feature, layer) {
     const name1 = feature.properties.adm1_name || "";
     const pcode = feature.properties.adm1_pcode || "";
     const bounds = layer.getBounds();
-    map.flyToBounds(bounds, {
-      padding: [50, 50],
-      maxZoom: CITY_ZOOM - 0.1,
-      duration: 0.8,
-    });
+    if (!alreadySelected) {
+      map.flyToBounds(bounds, {
+        padding: [50, 50],
+        maxZoom: CITY_ZOOM - 0.1,
+        duration: 0.8,
+      });
+    }
 
     const persianName = stripShahrestanPrefix(
       feature.properties.adm2_name1 || persianShahrestanNames[name2] || name2,
     );
     const provinceFa =
       feature.properties.adm1_name1 || persianProvinceNames[name1] || name1;
-    const courtsToShow = await getAreaCourtsAsync(name1, name2, pcode);
-    showPopup(`${provinceFa} — ${persianName}`, courtsToShow);
+    const provinceData = await loadProvinceCourtFile(name1, pcode);
+    const areaKey = resolveAreaKey(provinceData, name2);
+    const area = areaKey ? provinceData?.areas?.[areaKey] : null;
+    showShahrestanPopup(`${provinceFa} — ${persianName}`, area);
     showBackButton();
+
+    // If the clicked shahrestan matches a city-district registry entry, load its districts
+    const matchedCityCfg = CITY_DISTRICT_REGISTRY.find(
+      (cfg) => cfg.provinceName === name1 && cfg.persianName === persianName,
+    );
+    if (matchedCityCfg) {
+      tehranDistrictsExplicitlyEnabled = true;
+      ensureCityDistrictLoaded(matchedCityCfg);
+      const showWhenReady = setInterval(() => {
+        const state = cityDistrictState[matchedCityCfg.id];
+        if (state && state.loaded) {
+          clearInterval(showWhenReady);
+          if (!map.hasLayer(state.layerGroup)) {
+            state.layerGroup.addTo(map);
+            state.labelGroup.addTo(map);
+          }
+        }
+      }, 50);
+    } else {
+      tehranDistrictsExplicitlyEnabled = false;
+      updateAllCityDistrictVisibility();
+    }
   });
 }
 
@@ -1036,7 +1318,13 @@ function buildCityLabels() {
 function updateCityLabelVisibility() {
   buildCityLabels();
   const zoom = map.getZoom();
-  if (zoom >= SHAHRESTAN_ZOOM && zoom < CITY_ZOOM) {
+  // City labels only appear when zoomed into a selected province range
+  // AND a province is actually selected (user clicked one) OR the map
+  // center is inside a province boundary at shahrestan zoom level.
+  const provinceActive = !!selectedProvinceLayer;
+  const shouldShow =
+    zoom >= SHAHRESTAN_ZOOM && zoom < CITY_ZOOM && provinceActive;
+  if (shouldShow) {
     if (!map.hasLayer(cityLabelLayer)) cityLabelLayer.addTo(map);
   } else {
     if (cityLabelLayer && map.hasLayer(cityLabelLayer))
@@ -1079,6 +1367,7 @@ function buildCityDistrictLayer(cfg, geojsonData) {
 
     layer.on("click", async (e) => {
       L.DomEvent.stopPropagation(e);
+      placeClickPin(e.latlng);
       if (state.selectedLayer && state.selectedLayer !== layer) {
         state.selectedLayer.setStyle({
           fillColor: districtColor(
@@ -1129,11 +1418,22 @@ function ensureCityDistrictLoaded(cfg) {
     .catch(() => console.warn(`Error: ${cfg.filePath}`));
 }
 
+// City districts (e.g. Tehran's 22 municipal zones) are shown ONLY when the
+// user explicitly clicks the matching shahrestan — not automatically on zoom.
+// This flag is set by onEachShahrestan when Tehran city is clicked.
+let tehranDistrictsExplicitlyEnabled = false;
+
 function updateAllCityDistrictVisibility() {
   const zoom = map.getZoom();
   const center = map.getCenter();
   CITY_DISTRICT_REGISTRY.forEach((cfg) => {
-    const show = zoom >= CITY_ZOOM && cfg.viewBounds.contains(center);
+    // Show districts if:
+    // (a) user explicitly clicked the city shahrestan, OR
+    // (b) user manually zoomed past CITY_ZOOM while centered in the city bounds
+    const explicitlyEnabled = tehranDistrictsExplicitlyEnabled;
+    const zoomEnabled = zoom >= CITY_ZOOM && cfg.viewBounds.contains(center);
+    const show = explicitlyEnabled || zoomEnabled;
+
     if (show) ensureCityDistrictLoaded(cfg);
     const state = cityDistrictState[cfg.id];
     if (!state) return;
@@ -1170,7 +1470,48 @@ map.on("zoomend moveend", () => {
   if (map.getZoom() >= SHAHRESTAN_ZOOM) hint.classList.add("hidden");
   else hint.classList.remove("hidden");
 });
-map.on("click", () => hidePopup());
+// ── Click-to-pin: drop a temporary location marker ──────────────────────────
+let clickMarker = null;
+let clickPinTimeout = null;
+
+const clickPinIcon = L.divIcon({
+  className: "click-pin-icon",
+  html: `
+    <div class="click-pin-pulse"></div>
+    <svg class="click-pin-svg" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 0C7.13 0 3 4.13 3 9c0 6.75 9 23 9 23s9-16.25 9-23c0-4.87-4.13-9-9-9z"
+            fill="#b45309" stroke="#fff" stroke-width="1.5"/>
+      <circle cx="12" cy="9" r="3.5" fill="#fff"/>
+    </svg>`,
+  iconSize: [28, 36],
+  iconAnchor: [14, 34],
+});
+
+function placeClickPin(latlng) {
+  if (clickMarker) {
+    map.removeLayer(clickMarker);
+    clickMarker = null;
+  }
+  if (clickPinTimeout) {
+    clearTimeout(clickPinTimeout);
+    clickPinTimeout = null;
+  }
+  clickMarker = L.marker(latlng, {
+    icon: clickPinIcon,
+    zIndexOffset: 500,
+  }).addTo(map);
+  clickPinTimeout = setTimeout(() => {
+    if (clickMarker) {
+      map.removeLayer(clickMarker);
+      clickMarker = null;
+    }
+  }, 6000);
+}
+
+map.on("click", (e) => {
+  hidePopup();
+  placeClickPin(e.latlng);
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RUN & LOAD DATASETS
