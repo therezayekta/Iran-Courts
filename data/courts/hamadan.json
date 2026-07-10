@@ -164,138 +164,6 @@
     }
   ],
   "areas": {
-    "bakhsh_پیر_سلمان": {
-      "nameFa": "بخش پیر سلمان",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش پيرسلمان",
-          "code": "81771",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
-    "bakhsh_جوکار": {
-      "nameFa": "بخش جوکار",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش جوكار",
-          "code": "81331",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
-    "bakhsh_خزل": {
-      "nameFa": "بخش خزل",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش خزل",
-          "code": "81361",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
-    "bakhsh_زند": {
-      "nameFa": "بخش زند",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش زند",
-          "code": "81751",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
-    "bakhsh_سامان": {
-      "nameFa": "بخش سامان",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش سامن",
-          "code": "81381",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
-    "bakhsh_سردرود": {
-      "nameFa": "بخش سردرود",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش سردرود استان همدان",
-          "code": "81291",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
-    "bakhsh_شرا(شهاوند)": {
-      "nameFa": "بخش شرا(شهاوند)",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش شراء(قهاوند)",
-          "code": "81401",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
-    "bakhsh_شیرین_سو": {
-      "nameFa": "بخش شیرین سو",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش شيرين سو",
-          "code": "81466",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
-    "bakhsh_صالح_آّباد": {
-      "nameFa": "بخش صالح آّباد",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش صالح آباد استان همدان",
-          "code": "81451",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
-    "bakhsh_گل_تپه": {
-      "nameFa": "بخش گل تپه",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش گل تپه",
-          "code": "81421",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
-    "bakhsh_لالجین": {
-      "nameFa": "بخش لالجین",
-      "courts": [
-        {
-          "name": "دادگاه عمومي و انقلاب بخش لالجين",
-          "code": "81341",
-          "type": "عمومی و انقلاب"
-        }
-      ],
-      "districts": {},
-      "note": "sub-county district; parent shahrestan not determinable from geojson (admin2-level only)"
-    },
     "Asadabad": {
       "nameFa": "شهرستان اسد آّباد",
       "courts": [
@@ -310,7 +178,15 @@
           "type": "عمومی و انقلاب"
         }
       ],
-      "districts": {}
+      "districts": {
+        "بخش پیرسلمان": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش پيرسلمان",
+            "code": "81771",
+            "type": "عمومی و انقلاب"
+          }
+        ]
+      }
     },
     "Bahar": {
       "nameFa": "شهرستان بهار",
@@ -326,7 +202,22 @@
           "type": "عمومی و انقلاب"
         }
       ],
-      "districts": {}
+      "districts": {
+        "بخش لالجین": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش لالجين",
+            "code": "81341",
+            "type": "عمومی و انقلاب"
+          }
+        ],
+        "بخش صالح آباد": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش صالح آباد استان همدان",
+            "code": "81451",
+            "type": "عمومی و انقلاب"
+          }
+        ]
+      }
     },
     "Tuyserkan": {
       "nameFa": "شهرستان تویسرکان",
@@ -369,7 +260,15 @@
           "type": "عمومی و انقلاب"
         }
       ],
-      "districts": {}
+      "districts": {
+        "بخش سردرود": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش سردرود استان همدان",
+            "code": "81291",
+            "type": "عمومی و انقلاب"
+          }
+        ]
+      }
     },
     "Famenin": {
       "nameFa": "شهرستان فامنین",
@@ -401,7 +300,22 @@
           "type": "عمومی و انقلاب"
         }
       ],
-      "districts": {}
+      "districts": {
+        "بخش شیرین سو": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش شيرين سو",
+            "code": "81466",
+            "type": "عمومی و انقلاب"
+          }
+        ],
+        "بخش گل تپه": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش گل تپه",
+            "code": "81421",
+            "type": "عمومی و انقلاب"
+          }
+        ]
+      }
     },
     "Malayer": {
       "nameFa": "شهرستان ملایر",
@@ -417,7 +331,29 @@
           "type": "عمومی و انقلاب"
         }
       ],
-      "districts": {}
+      "districts": {
+        "بخش جوکار": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش جوكار",
+            "code": "81331",
+            "type": "عمومی و انقلاب"
+          }
+        ],
+        "بخش زند": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش زند",
+            "code": "81751",
+            "type": "عمومی و انقلاب"
+          }
+        ],
+        "بخش سامن": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش سامن",
+            "code": "81381",
+            "type": "عمومی و انقلاب"
+          }
+        ]
+      }
     },
     "Nahavand": {
       "nameFa": "شهرستان نهاوند",
@@ -433,7 +369,15 @@
           "type": "عمومی و انقلاب"
         }
       ],
-      "districts": {}
+      "districts": {
+        "بخش خزل": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش خزل",
+            "code": "81361",
+            "type": "عمومی و انقلاب"
+          }
+        ]
+      }
     },
     "Hamadan": {
       "nameFa": "شهرستان همدان",
@@ -459,7 +403,15 @@
           "type": "خانواده"
         }
       ],
-      "districts": {}
+      "districts": {
+        "بخش شرا (قهاوند)": [
+          {
+            "name": "دادگاه عمومي و انقلاب بخش شراء(قهاوند)",
+            "code": "81401",
+            "type": "عمومی و انقلاب"
+          }
+        ]
+      }
     }
   }
 }
