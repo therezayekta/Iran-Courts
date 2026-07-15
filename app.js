@@ -1099,53 +1099,27 @@ function onEachProvince(feature, layer) {
     const paddingTopLeft = L.point(pad + popupWidth, pad);
     const paddingBottomRight = L.point(pad, pad);
 
-    // Check if this province has a city district registry entry (e.g. Tehran)
-    const cityDistrictCfg = CITY_DISTRICT_REGISTRY.find(
-      (cfg) => cfg.provinceName === selectedProvinceName,
-    );
-
-    if (cityDistrictCfg) {
-      // Fly directly into the city district view and load districts immediately
-      map.flyToBounds(cityDistrictCfg.viewBounds, {
-        padding: [40, 40],
-        maxZoom: CITY_ZOOM + 0.5,
-        duration: 0.9,
-      });
-      map.once("moveend", () => {
-        ensureCityDistrictLoaded(cityDistrictCfg);
-        // Poll until the async fetch completes and layer is ready
-        const showWhenReady = setInterval(() => {
-          const state = cityDistrictState[cityDistrictCfg.id];
-          if (state && state.loaded) {
-            clearInterval(showWhenReady);
-            if (!map.hasLayer(state.layerGroup)) {
-              state.layerGroup.addTo(map);
-              state.labelGroup.addTo(map);
-            }
-          }
-        }, 50);
-        updateCityLabelVisibility();
-        updateProvinceLabelsVisibility();
-      });
-    } else {
-      map.flyToBounds(selectedProvinceBounds, {
-        paddingTopLeft,
-        paddingBottomRight,
-        maxZoom: CITY_ZOOM - 0.1,
-        duration: 0.9,
-      });
-      map.once("moveend", () => {
-        // Force shahrestans visible regardless of zoom — user explicitly selected this province
-        if (districtLayerGroup && !map.hasLayer(districtLayerGroup)) {
-          map.addLayer(districtLayerGroup);
-        }
-        if (shahrestanLabelGroup && !map.hasLayer(shahrestanLabelGroup)) {
-          shahrestanLabelGroup.addTo(map);
-        }
-        updateCityLabelVisibility();
-        updateProvinceLabelsVisibility();
-      });
-    }
+    // Province click always zooms to the whole province first — the city
+    // district view (e.g. Tehran's 22 مناطق) only kicks in when the user
+    // drills further in and clicks the city's own shahrestan shape
+    // (see onEachShahrestan), not on this initial province click.
+    map.flyToBounds(selectedProvinceBounds, {
+      paddingTopLeft,
+      paddingBottomRight,
+      maxZoom: CITY_ZOOM - 0.1,
+      duration: 0.9,
+    });
+    map.once("moveend", () => {
+      // Force shahrestans visible regardless of zoom — user explicitly selected this province
+      if (districtLayerGroup && !map.hasLayer(districtLayerGroup)) {
+        map.addLayer(districtLayerGroup);
+      }
+      if (shahrestanLabelGroup && !map.hasLayer(shahrestanLabelGroup)) {
+        shahrestanLabelGroup.addTo(map);
+      }
+      updateCityLabelVisibility();
+      updateProvinceLabelsVisibility();
+    });
 
     const displayName =
       feature.properties.adm1_name1 ||
