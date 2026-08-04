@@ -423,6 +423,19 @@ function formatCourtCode(code) {
   return toPersianNum(String(code));
 }
 
+function buildBranchesHTML(branches) {
+  if (!branches || branches.length === 0) return "";
+  return `
+    <div class="court-row-branches">
+      ${branches
+        .map(
+          (b) =>
+            `<span class="court-branch-chip ${courtTypeClass(b)}">${b}</span>`,
+        )
+        .join("")}
+    </div>`;
+}
+
 function buildCourtListHTML(courts) {
   if (!courts || courts.length === 0) {
     return '<p class="popup-empty">اطلاعاتی برای این منطقه ثبت نشده است.</p>';
@@ -444,6 +457,7 @@ function buildCourtListHTML(courts) {
             </span>
             <span class="court-type-badge ${courtTypeClass(c.type)}">${c.type || "—"}</span>
           </div>
+          ${buildBranchesHTML(c.branches)}
         </article>`,
         )
         .join("")}

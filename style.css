@@ -724,6 +724,59 @@ body {
   color: #475569;
 }
 
+/* ── Branch chips (شعبه‌ها) — secondary row inside each court card ─────────── */
+
+.court-row-branches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.court-branch-chip {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 2.5px 9px;
+  border-radius: 12px;
+  white-space: nowrap;
+  background: transparent;
+  border: 1px solid currentColor;
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+}
+
+.court-row:hover .court-branch-chip {
+  opacity: 1;
+}
+
+.court-branch-chip.type-hoquqi,
+.court-branch-chip.type-dadgah {
+  color: #1d4ed8;
+}
+
+.court-branch-chip.type-keyfari {
+  color: #b91c1c;
+}
+
+.court-branch-chip.type-solh {
+  color: #047857;
+}
+
+.court-branch-chip.type-dadsara {
+  color: #6d28d9;
+}
+
+.court-branch-chip.type-khanvade {
+  color: #be185d;
+}
+
+.court-branch-chip.type-default {
+  color: #64748b;
+}
+
 /* ── Spec tags ────────────────────────────────────────────────────────────── */
 
 .spec-list {
