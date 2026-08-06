@@ -165,7 +165,7 @@
     }
   ],
   "areas": {
-    "اشتهارد": {
+    "Eshtehard": {
       "nameFa": "شهرستان اشتهارد",
       "courts": [
         {
@@ -217,7 +217,7 @@
       ],
       "districts": {}
     },
-    "ساوجبلاغ": {
+    "Savojbolagh": {
       "nameFa": "شهرستان ساوجبلاغ",
       "courts": [
         {
@@ -243,7 +243,7 @@
       ],
       "districts": {}
     },
-    "طالقان": {
+    "Taleghan": {
       "nameFa": "شهرستان طالقان",
       "courts": [
         {
@@ -269,7 +269,7 @@
       ],
       "districts": {}
     },
-    "فردیس": {
+    "Fardis": {
       "nameFa": "شهرستان فردیس",
       "courts": [
         {
@@ -295,7 +295,7 @@
       ],
       "districts": {}
     },
-    "کرج": {
+    "Karaj": {
       "nameFa": "شهرستان کرج",
       "courts": [
         {

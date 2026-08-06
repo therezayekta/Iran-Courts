@@ -242,7 +242,7 @@
     }
   ],
   "areas": {
-    "نطنز": {
+    "Natanz": {
       "nameFa": "شهرستان نطنز",
       "courts": [],
       "districts": {
@@ -263,7 +263,7 @@
         ]
       }
     },
-    "لنجان": {
+    "Lenjan": {
       "nameFa": "شهرستان لنجان",
       "courts": [],
       "districts": {
@@ -284,7 +284,7 @@
         ]
       }
     },
-    "کاشان": {
+    "Kashan": {
       "nameFa": "شهرستان کاشان",
       "courts": [],
       "districts": {
@@ -305,7 +305,7 @@
         ]
       }
     },
-    "سمیرم": {
+    "Semirom": {
       "nameFa": "شهرستان سمیرم",
       "courts": [],
       "districts": {
@@ -326,7 +326,7 @@
         ]
       }
     },
-    "اردستان": {
+    "Ardestan": {
       "nameFa": "شهرستان اردستان",
       "courts": [
         {
@@ -410,7 +410,7 @@
         ]
       }
     },
-    "نجف آباد": {
+    "Najafabad": {
       "nameFa": "شهرستان نجف آباد",
       "courts": [],
       "districts": {
@@ -478,7 +478,7 @@
       ],
       "districts": {}
     },
-    "اصفهان": {
+    "Isfahan": {
       "nameFa": "شهرستان اصفهان",
       "courts": [
         {
@@ -525,7 +525,7 @@
       ],
       "districts": {}
     },
-    "برخوار": {
+    "Borkhar": {
       "nameFa": "شهرستان برخوار",
       "courts": [
         {
