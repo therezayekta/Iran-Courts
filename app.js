@@ -607,9 +607,12 @@ function renderDistrictLevelTabs(cityIdx) {
     ...Object.values(area.districts || {}).flat(),
   ];
 
+  const hasOwnCourts = (area.courts || []).length > 0;
+
   tabBar.innerHTML = `
     <button class="popup-tab back-tab" onclick="renderCityLevelTabs()" title="بازگشت به شهرستان‌ها">‹ ${cityLabel}</button>
     <button class="popup-tab active" onclick="activateTab(this, 'popup-panel-dist-all')">همه</button>
+    ${hasOwnCourts ? `<button class="popup-tab" onclick="activateTab(this, 'popup-panel-dist-city')">${cityLabel}</button>` : ""}
     ${districtKeys
       .map(
         (dk, j) =>
@@ -620,6 +623,9 @@ function renderDistrictLevelTabs(cityIdx) {
 
   panels.innerHTML =
     `<div class="popup-panel active" id="popup-panel-dist-all">${buildCourtListHTML(allAreaCourts)}</div>` +
+    (hasOwnCourts
+      ? `<div class="popup-panel" id="popup-panel-dist-city">${buildCourtListHTML(area.courts)}</div>`
+      : "") +
     districtKeys
       .map(
         (dk, j) =>
@@ -672,9 +678,16 @@ function showShahrestanPopup(title, area) {
     ...Object.values(area.districts).flat(),
   ];
 
+  const hasOwnCourts = (area.courts || []).length > 0;
+  const cityLabel = (area.nameFa || title || "").replace(
+    /^شهرستان\s+|^بخش\s+/,
+    "",
+  );
+
   const tabBar = `
     <div class="popup-tab-bar">
       <button class="popup-tab active" data-tab="sh-all" onclick="switchPopupTab(this, 'sh-all')">همه</button>
+      ${hasOwnCourts ? `<button class="popup-tab" data-tab="sh-city" onclick="switchPopupTab(this, 'sh-city')">${cityLabel}</button>` : ""}
       ${districtKeys
         .map(
           (dk, j) =>
@@ -684,6 +697,9 @@ function showShahrestanPopup(title, area) {
     </div>`;
 
   const allPanel = `<div class="popup-panel active" id="popup-panel-sh-all">${buildCourtListHTML(allCourts)}</div>`;
+  const cityPanel = hasOwnCourts
+    ? `<div class="popup-panel" id="popup-panel-sh-city">${buildCourtListHTML(area.courts)}</div>`
+    : "";
   const distPanels = districtKeys
     .map(
       (dk, j) =>
@@ -691,7 +707,7 @@ function showShahrestanPopup(title, area) {
     )
     .join("");
 
-  body.innerHTML = tabBar + allPanel + distPanels;
+  body.innerHTML = tabBar + allPanel + cityPanel + distPanels;
   popup.classList.add("visible");
 }
 
