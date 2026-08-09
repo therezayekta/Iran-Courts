@@ -1,4 +1,17 @@
 // ═══════════════════════════════════════════════════════════════════════════
+// SERVICE WORKER REGISTRATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker
+      .register("/sw.js")
+      .then((reg) => console.log("[SW] Registered, scope:", reg.scope))
+      .catch((err) => console.warn("[SW] Registration failed:", err));
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // MAP INIT
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -365,22 +378,24 @@ const provinceSelected = {
 };
 
 const shahrestanDefault = {
-  color: "#94a3b8",
-  weight: 0.6,
+  color: "#334155",
+  weight: 0.7,
   fillColor: "#cbd5e1",
   fillOpacity: 0.02,
-  dashArray: "3,3",
+  dashArray: "3,4",
+  opacity: 0.55,
 };
 const shahrestanHover = {
   fillColor: "#b45309",
   fillOpacity: 0.12,
-  weight: 1.2,
+  weight: 1.4,
+  color: "#0f172a",
 };
 const shahrestanSelected = {
   fillColor: "#1e293b",
   fillOpacity: 0.14,
-  weight: 1.6,
-  color: "#334155",
+  weight: 1.8,
+  color: "#000000",
 };
 
 let provinceLayers = [],
@@ -770,7 +785,12 @@ function goBack() {
       state.selectedLayer = null;
     }
   });
-  map.flyToBounds(iranBounds, { padding: [48, 48], duration: 0.8 });
+  const isMobile = window.innerWidth <= 600;
+  map.fitBounds(iranBounds, {
+    padding: isMobile ? [10, 10] : [48, 48],
+    animate: true,
+    duration: 0.6,
+  });
   hideBackButton();
   hidePopup();
   updateCityLabelVisibility();
@@ -918,6 +938,7 @@ async function resolveMapCenterCity() {
       if (
         !foundProps &&
         layer.feature &&
+        layer.getBounds().contains(center) &&
         pointInFeature(center, layer.feature)
       ) {
         foundProps = layer.feature.properties;
@@ -1139,7 +1160,8 @@ function onEachProvince(feature, layer) {
       maxZoom: CITY_ZOOM - 0.1,
       duration: 0.9,
     });
-    map.once("moveend", () => {
+    map.once("zoomend", () => {
+      clearTimeout(_moveEndTimer);
       // Force shahrestans visible regardless of zoom — user explicitly selected this province
       if (districtLayerGroup && !map.hasLayer(districtLayerGroup)) {
         map.addLayer(districtLayerGroup);
@@ -1292,14 +1314,16 @@ function buildShahrestanLabels(geojsonData) {
 function updateShahrestanVisibility() {
   if (!districtLayerGroup) return;
   const zoom = map.getZoom();
-  // Also show shahrestans when a province is selected, regardless of zoom level
-  const shouldShow = zoom >= SHAHRESTAN_ZOOM || !!selectedProvinceLayer;
-  if (shouldShow) {
-    if (!map.hasLayer(districtLayerGroup)) map.addLayer(districtLayerGroup);
+
+  // Polygons are always visible — they give geographic context at any zoom
+  if (!map.hasLayer(districtLayerGroup)) map.addLayer(districtLayerGroup);
+
+  // Labels only appear when zoomed in enough to be readable
+  const shouldShowLabels = zoom >= SHAHRESTAN_ZOOM || !!selectedProvinceLayer;
+  if (shouldShowLabels) {
     if (shahrestanLabelGroup && !map.hasLayer(shahrestanLabelGroup))
       shahrestanLabelGroup.addTo(map);
   } else {
-    if (map.hasLayer(districtLayerGroup)) map.removeLayer(districtLayerGroup);
     if (shahrestanLabelGroup && map.hasLayer(shahrestanLabelGroup))
       map.removeLayer(shahrestanLabelGroup);
   }
@@ -1320,7 +1344,6 @@ function buildCityLabels() {
 }
 
 function updateCityLabelVisibility() {
-  buildCityLabels();
   const zoom = map.getZoom();
   // City labels only appear when zoomed into a selected province range
   // AND a province is actually selected (user clicked one) OR the map
@@ -1455,24 +1478,28 @@ function updateAllCityDistrictVisibility() {
   });
 }
 
+let _moveEndTimer = null;
 map.on("zoomend moveend", () => {
-  // If the user manually zooms/pans back out past the shahrestan threshold,
-  // clear the "province selected" state so shahrestan borders + city labels
-  // actually hide again instead of staying forced-visible until Back is pressed.
-  if (selectedProvinceLayer && map.getZoom() < SHAHRESTAN_ZOOM - 0.5) {
-    selectedProvinceLayer.setStyle(provinceDefault);
-    selectedProvinceLayer = null;
-    selectedProvinceName = null;
-    selectedProvinceBounds = null;
-  }
-  updateShahrestanVisibility();
-  updateAllCityDistrictVisibility();
-  updateCityLabelVisibility();
-  updateProvinceLabelsVisibility();
-  updateBackButtonVisibility();
-  const hint = document.getElementById("zoom-hint");
-  if (map.getZoom() >= SHAHRESTAN_ZOOM) hint.classList.add("hidden");
-  else hint.classList.remove("hidden");
+  clearTimeout(_moveEndTimer);
+  _moveEndTimer = setTimeout(() => {
+    // If the user manually zooms/pans back out past the shahrestan threshold,
+    // clear the "province selected" state so shahrestan borders + city labels
+    // actually hide again instead of staying forced-visible until Back is pressed.
+    if (selectedProvinceLayer && map.getZoom() < SHAHRESTAN_ZOOM - 0.5) {
+      selectedProvinceLayer.setStyle(provinceDefault);
+      selectedProvinceLayer = null;
+      selectedProvinceName = null;
+      selectedProvinceBounds = null;
+    }
+    updateShahrestanVisibility();
+    updateAllCityDistrictVisibility();
+    updateCityLabelVisibility();
+    updateProvinceLabelsVisibility();
+    updateBackButtonVisibility();
+    const hint = document.getElementById("zoom-hint");
+    if (map.getZoom() >= SHAHRESTAN_ZOOM) hint.classList.add("hidden");
+    else hint.classList.remove("hidden");
+  }, 80);
 });
 // ── Click-to-pin: drop a temporary location marker ──────────────────────────
 let clickMarker = null;
@@ -1522,7 +1549,7 @@ map.on("click", (e) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const loadAdmin1 = fetch(
-  `data/boundaries/irn_admin1_simplified.geojson?v=${Date.now()}`,
+  `data/boundaries/irn_admin1_simplified.geojson`,
 )
   .then((r) => r.json())
   .then((data) => {
@@ -1534,7 +1561,7 @@ const loadAdmin1 = fetch(
   .catch((err) => console.error("Error loading provinces", err));
 
 const loadAdmin2 = fetch(
-  `data/boundaries/irn_admin2_simplified.geojson?v=${Date.now()}`,
+  `data/boundaries/irn_admin2_simplified.geojson`,
 )
   .then((r) => r.json())
   .then((data) => {
@@ -1545,6 +1572,7 @@ const loadAdmin2 = fetch(
 
 Promise.all([loadAdmin1, loadAdmin2])
   .then(() => {
+    buildCityLabels();
     setTimeout(() => {
       document.body.classList.add("loaded");
     }, 500);
@@ -1591,7 +1619,11 @@ async function findLayerAndShowInfo(latlng) {
     if (state && state.layerGroup) {
       let foundLayer = null;
       state.layerGroup.eachLayer((layer) => {
-        if (layer.feature && pointInFeature(latlng, layer.feature))
+        if (
+          layer.feature &&
+          layer.getBounds().contains(latlng) &&
+          pointInFeature(latlng, layer.feature)
+        )
           foundLayer = layer;
       });
       if (foundLayer) {
@@ -1615,7 +1647,11 @@ async function findLayerAndShowInfo(latlng) {
   if (districtLayerGroup) {
     let foundLayer = null;
     districtLayerGroup.eachLayer((layer) => {
-      if (layer.feature && pointInFeature(latlng, layer.feature))
+      if (
+        layer.feature &&
+        layer.getBounds().contains(latlng) &&
+        pointInFeature(latlng, layer.feature)
+      )
         foundLayer = layer;
     });
     if (foundLayer) {
@@ -1636,7 +1672,7 @@ async function findLayerAndShowInfo(latlng) {
   }
 
   for (let obj of provinceLayers) {
-    if (obj.feature && pointInFeature(latlng, obj.feature)) {
+    if (obj.feature && obj.layer.getBounds().contains(latlng) && pointInFeature(latlng, obj.feature)) {
       const props = obj.feature.properties;
       const name = props.adm1_name || "ناشناس";
       const pcode = props.adm1_pcode || "";

@@ -387,16 +387,26 @@ body {
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
-  display: none;
+  display: flex;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-6px);
   box-shadow: var(--shadow-lg);
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    opacity 0.22s ease,
+    transform 0.22s ease,
+    visibility 0.22s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
   align-items: center;
   gap: 8px;
   min-height: 42px;
 }
 
 #back-btn.visible {
-  display: flex;
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
 }
 
 #back-btn:hover {
@@ -433,8 +443,9 @@ body {
   white-space: nowrap;
   box-shadow: var(--shadow-lg);
   transition:
-    opacity 0.4s ease,
-    transform 0.4s ease;
+    opacity 0.3s ease,
+    transform 0.3s ease,
+    visibility 0.3s ease;
 }
 
 @media (max-width: 600px) {
@@ -447,6 +458,7 @@ body {
 
 #zoom-hint.hidden {
   opacity: 0;
+  visibility: hidden;
   transform: translate(-50%, 15px);
   pointer-events: none;
 }
@@ -475,25 +487,42 @@ body {
   bottom: 20px;
 }
 
-/* Mobile: compact floating panel — leaves map visible */
+/* Mobile: compact floating bottom sheet — leaves map visible */
 @media (max-width: 600px) {
   #info-popup {
-    left: 12px;
-    right: 12px;
+    left: 8px;
+    right: 8px;
     width: auto;
-    max-height: 42vh; /* shorter than desktop — map still visible above */
-    border-radius: 16px; /* fully rounded floating card */
+    max-height: 46vh;
+    border-radius: 18px;
     border-bottom: 1px solid var(--border);
     bottom: -100%;
   }
 
   #info-popup.visible {
-    bottom: 16px; /* floats above bottom edge — map visible above it */
+    bottom: 12px;
+  }
+
+  /* Drag-handle indicator above the popup header */
+  #popup-header::before {
+    content: "";
+    display: block;
+    position: absolute;
+    top: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.35);
   }
 }
 
-#info-popup::before {
-  display: none;
+/* Desktop: no drag handle needed */
+@media (min-width: 601px) {
+  #info-popup::before {
+    display: none;
+  }
 }
 
 /* POPUP HEADER - Centered & Professional Dark Style */
@@ -600,6 +629,26 @@ body {
   opacity: 0.6;
 }
 
+/* Distinct error state — shown when a province JSON fails to load */
+.popup-error {
+  color: #b91c1c;
+  font-size: 13px;
+  line-height: 1.8;
+  text-align: center;
+  padding: 32px 16px;
+  background: #fff5f5;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  margin: 12px;
+}
+
+.popup-error::before {
+  content: "⚠️";
+  display: block;
+  font-size: 28px;
+  margin-bottom: 10px;
+}
+
 /* ── Court list in popup ─────────────────────────────────────────────────── */
 
 .court-summary {
@@ -643,7 +692,7 @@ body {
 .court-row:hover {
   border-color: rgba(180, 83, 9, 0.35);
   box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
+  background: var(--hover-bg);
 }
 
 .court-row-name {
