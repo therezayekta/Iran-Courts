@@ -58,6 +58,16 @@ map.createPane("maskPane");
 map.getPane("maskPane").style.zIndex = 350;
 map.getPane("maskPane").style.pointerEvents = "none";
 
+// Provinces sit in a pane at 405; shahrestans in one at 410 (above).
+// At low zoom the shahrestan layer is simply removed from the map entirely,
+// so the province pane becomes the topmost interactive layer and receives
+// all clicks. No pointer-events tricks needed.
+map.createPane("provincePane");
+map.getPane("provincePane").style.zIndex = 405;
+
+map.createPane("shahrestanPane");
+map.getPane("shahrestanPane").style.zIndex = 410;
+
 function buildOutsideIranMask(admin1GeoJSON) {
   const world = [
     [-89, -179],
@@ -164,13 +174,12 @@ async function loadProvinceCourtFile(adm1Name, adm1Pcode) {
   const fileName = resolveProvinceFileName(adm1Name, adm1Pcode);
   if (!fileName) return null;
 
+  // Store the Promise itself so concurrent calls for the same file share one
+  // fetch instead of firing duplicates before the first one resolves.
   if (!courtCache[fileName]) {
-    try {
-      const res = await fetch(`data/courts/${fileName}.json`);
-      courtCache[fileName] = res.ok ? await res.json() : null;
-    } catch {
-      courtCache[fileName] = null;
-    }
+    courtCache[fileName] = fetch(`data/courts/${fileName}.json`)
+      .then((res) => (res.ok ? res.json() : null))
+      .catch(() => null);
   }
   return courtCache[fileName];
 }
@@ -385,6 +394,7 @@ const shahrestanDefault = {
   dashArray: "3,4",
   opacity: 0.55,
 };
+
 const shahrestanHover = {
   fillColor: "#b45309",
   fillOpacity: 0.12,
@@ -407,7 +417,8 @@ let districtLayerGroup = null,
   selectedDistrictLayer = null,
   cityLabelLayer = null,
   provinceLabelGroup = null,
-  shahrestanLabelGroup = null;
+  shahrestanLabelGroup = null,
+  shahrestanLayerIndex = {}; // Persian name → layer, built once after admin2 loads
 const cityDistrictState = {};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -499,21 +510,10 @@ function showPopup(title, courts) {
 
 function flyToShahrestanByName(persianName) {
   if (!districtLayerGroup) return;
-  let best = null;
-  districtLayerGroup.eachLayer((layer) => {
-    if (best) return;
-    const props = layer.feature?.properties || {};
-    const fa = stripShahrestanPrefix(
-      props.adm2_name1 ||
-        persianShahrestanNames[props.adm2_name] ||
-        props.adm2_name ||
-        "",
-    );
-    const clean = (s) => s.replace(/\s+/g, "").replace(/[‌]/g, "");
-    if (clean(fa) === clean(persianName)) best = layer;
-  });
-  if (best) {
-    map.flyToBounds(best.getBounds(), {
+  const clean = (s) => s.replace(/\s+/g, "").replace(/[‌]/g, "");
+  const layer = shahrestanLayerIndex[clean(persianName)];
+  if (layer) {
+    map.flyToBounds(layer.getBounds(), {
       padding: [50, 50],
       maxZoom: CITY_ZOOM - 0.1,
       duration: 0.7,
@@ -1162,13 +1162,7 @@ function onEachProvince(feature, layer) {
     });
     map.once("zoomend", () => {
       clearTimeout(_moveEndTimer);
-      // Force shahrestans visible regardless of zoom — user explicitly selected this province
-      if (districtLayerGroup && !map.hasLayer(districtLayerGroup)) {
-        map.addLayer(districtLayerGroup);
-      }
-      if (shahrestanLabelGroup && !map.hasLayer(shahrestanLabelGroup)) {
-        shahrestanLabelGroup.addTo(map);
-      }
+      updateShahrestanVisibility();
       updateCityLabelVisibility();
       updateProvinceLabelsVisibility();
     });
@@ -1224,6 +1218,15 @@ function updateProvinceLabelsVisibility() {
 
 function onEachShahrestan(feature, layer) {
   layer.setStyle(shahrestanDefault);
+
+  // Index this layer by its cleaned Persian name for O(1) flyTo lookup.
+  const props = feature.properties;
+  const fa = stripShahrestanPrefix(
+    props.adm2_name1 || persianShahrestanNames[props.adm2_name] || props.adm2_name || "",
+  );
+  const cleanKey = fa.replace(/\s+/g, "").replace(/[‌]/g, "");
+  if (cleanKey) shahrestanLayerIndex[cleanKey] = layer;
+
   layer.on("mouseover", () => {
     if (layer !== selectedDistrictLayer) layer.setStyle(shahrestanHover);
   });
@@ -1269,17 +1272,13 @@ function onEachShahrestan(feature, layer) {
     );
     if (matchedCityCfg) {
       tehranDistrictsExplicitlyEnabled = true;
-      ensureCityDistrictLoaded(matchedCityCfg);
-      const showWhenReady = setInterval(() => {
+      ensureCityDistrictLoaded(matchedCityCfg).then(() => {
         const state = cityDistrictState[matchedCityCfg.id];
-        if (state && state.loaded) {
-          clearInterval(showWhenReady);
-          if (!map.hasLayer(state.layerGroup)) {
-            state.layerGroup.addTo(map);
-            state.labelGroup.addTo(map);
-          }
+        if (state && !map.hasLayer(state.layerGroup)) {
+          state.layerGroup.addTo(map);
+          state.labelGroup.addTo(map);
         }
-      }, 50);
+      });
     } else {
       tehranDistrictsExplicitlyEnabled = false;
       updateAllCityDistrictVisibility();
@@ -1315,15 +1314,17 @@ function updateShahrestanVisibility() {
   if (!districtLayerGroup) return;
   const zoom = map.getZoom();
 
-  // Polygons are always visible — they give geographic context at any zoom
-  if (!map.hasLayer(districtLayerGroup)) map.addLayer(districtLayerGroup);
+  // Show shahrestan borders + labels only when zoomed in past the threshold
+  // OR when the user has explicitly selected a province. Below that threshold
+  // the layer is removed entirely so province polygons receive all events.
+  const shouldShow = zoom >= SHAHRESTAN_ZOOM || !!selectedProvinceLayer;
 
-  // Labels only appear when zoomed in enough to be readable
-  const shouldShowLabels = zoom >= SHAHRESTAN_ZOOM || !!selectedProvinceLayer;
-  if (shouldShowLabels) {
+  if (shouldShow) {
+    if (!map.hasLayer(districtLayerGroup)) map.addLayer(districtLayerGroup);
     if (shahrestanLabelGroup && !map.hasLayer(shahrestanLabelGroup))
       shahrestanLabelGroup.addTo(map);
   } else {
+    if (map.hasLayer(districtLayerGroup)) map.removeLayer(districtLayerGroup);
     if (shahrestanLabelGroup && map.hasLayer(shahrestanLabelGroup))
       map.removeLayer(shahrestanLabelGroup);
   }
@@ -1438,11 +1439,16 @@ function buildCityDistrictLayer(cfg, geojsonData) {
 }
 
 function ensureCityDistrictLoaded(cfg) {
-  if (cityDistrictState[cfg.id]?.loaded) return;
-  fetch(cfg.filePath)
-    .then((r) => r.json())
-    .then((data) => buildCityDistrictLayer(cfg, data))
-    .catch(() => console.warn(`Error: ${cfg.filePath}`));
+  if (cityDistrictState[cfg.id]?.loaded) return Promise.resolve();
+  // Return the same promise if already in flight
+  if (!cityDistrictState[cfg.id]?._promise) {
+    if (!cityDistrictState[cfg.id]) cityDistrictState[cfg.id] = {};
+    cityDistrictState[cfg.id]._promise = fetch(cfg.filePath)
+      .then((r) => r.json())
+      .then((data) => buildCityDistrictLayer(cfg, data))
+      .catch(() => console.warn(`Error: ${cfg.filePath}`));
+  }
+  return cityDistrictState[cfg.id]._promise;
 }
 
 // City districts (e.g. Tehran's 22 municipal zones) are shown ONLY when the
@@ -1454,23 +1460,21 @@ function updateAllCityDistrictVisibility() {
   const zoom = map.getZoom();
   const center = map.getCenter();
   CITY_DISTRICT_REGISTRY.forEach((cfg) => {
-    // Show districts if:
-    // (a) user explicitly clicked the city shahrestan, OR
-    // (b) user manually zoomed past CITY_ZOOM while centered in the city bounds
     const explicitlyEnabled = tehranDistrictsExplicitlyEnabled;
     const zoomEnabled = zoom >= CITY_ZOOM && cfg.viewBounds.contains(center);
     const show = explicitlyEnabled || zoomEnabled;
 
-    if (show) ensureCityDistrictLoaded(cfg);
-    const state = cityDistrictState[cfg.id];
-    if (!state) return;
     if (show) {
-      if (!map.hasLayer(state.layerGroup)) {
-        state.layerGroup.addTo(map);
-        state.labelGroup.addTo(map);
-      }
+      ensureCityDistrictLoaded(cfg).then(() => {
+        const state = cityDistrictState[cfg.id];
+        if (state && !map.hasLayer(state.layerGroup)) {
+          state.layerGroup.addTo(map);
+          state.labelGroup.addTo(map);
+        }
+      });
     } else {
-      if (map.hasLayer(state.layerGroup)) {
+      const state = cityDistrictState[cfg.id];
+      if (state && map.hasLayer(state.layerGroup)) {
         map.removeLayer(state.layerGroup);
         map.removeLayer(state.labelGroup);
       }
@@ -1553,7 +1557,7 @@ const loadAdmin1 = fetch(
 )
   .then((r) => r.json())
   .then((data) => {
-    L.geoJSON(data, { onEachFeature: onEachProvince }).addTo(map);
+    L.geoJSON(data, { onEachFeature: onEachProvince, pane: "provincePane" }).addTo(map);
     buildProvinceLabels(data);
     updateProvinceLabelsVisibility();
     buildOutsideIranMask(data);
@@ -1565,7 +1569,7 @@ const loadAdmin2 = fetch(
 )
   .then((r) => r.json())
   .then((data) => {
-    districtLayerGroup = L.geoJSON(data, { onEachFeature: onEachShahrestan });
+    districtLayerGroup = L.geoJSON(data, { onEachFeature: onEachShahrestan, pane: "shahrestanPane" });
     buildShahrestanLabels(data);
     updateShahrestanVisibility();
   });
@@ -1644,7 +1648,7 @@ async function findLayerAndShowInfo(latlng) {
     }
   }
 
-  if (districtLayerGroup) {
+  if (districtLayerGroup && map.hasLayer(districtLayerGroup)) {
     let foundLayer = null;
     districtLayerGroup.eachLayer((layer) => {
       if (
